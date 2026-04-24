@@ -35,6 +35,10 @@ service ChatService {
   // Users removed from a room cannot rejoin.
   rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
 
+  // Leaves a room voluntarily.
+  // LEFT members may rejoin later.
+  rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
+
   // Lists rooms joined by the given user.
   rpc ListMyRooms(ListMyRoomsRequest) returns (ListMyRoomsResponse);
 
@@ -68,6 +72,8 @@ service ChatService {
 // =============================================================================
 
 message CreateRoomRequest {
+  // Temporary v1 field.
+  // Real production identity should come from auth metadata/JWT.
   string creator_user_id = 1;
   string title = 2;
 }
@@ -77,6 +83,8 @@ message CreateRoomResponse {
 }
 
 message CreateBoardLinkedRoomRequest {
+  // Temporary v1 field.
+  // Real production identity should come from auth metadata/JWT.
   string creator_user_id = 1;
   string board_id = 2;
   string title = 3;
@@ -89,11 +97,25 @@ message CreateBoardLinkedRoomResponse {
 
 message JoinRoomRequest {
   string room_id = 1;
+  // Temporary v1 field.
+  // Real production identity should come from auth metadata/JWT.
   string user_id = 2;
 }
 
 message JoinRoomResponse {
   ChatRoomMember member = 1;
+}
+
+message LeaveRoomRequest {
+  string room_id = 1;
+  // Temporary v1 field.
+  // Real production identity should come from auth metadata/JWT.
+  string user_id = 2;
+}
+
+message LeaveRoomResponse {
+  ChatRoomMember member = 1;
+  ChatRoom room = 2;
 }
 
 message ListMyRoomsRequest {
