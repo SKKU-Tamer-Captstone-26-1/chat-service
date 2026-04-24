@@ -1,0 +1,310 @@
+syntax = "proto3";
+
+package ontheblock.chat.v1;
+
+option java_package = "com.ontheblock.chat.v1";
+option java_multiple_files = true;
+option go_package = "github.com/ontheblock/chat-service/proto/chat/v1;chatv1";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// ChatService handles group chat only.
+//
+// Scope:
+// - general group rooms
+// - board-linked group rooms
+// - text, image, and system messages
+// - room-level read/unread tracking
+// - owner moderation
+//
+// Out of scope:
+// - direct 1:1 messaging
+// - typing indicators
+// - online/offline presence
+// - in-service notification delivery
+service ChatService {
+  // Creates a general group chat room.
+  rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
+
+  // Creates a board-linked group chat room.
+  // Each board may have at most one active linked chat room.
+  rpc CreateBoardLinkedRoom(CreateBoardLinkedRoomRequest) returns (CreateBoardLinkedRoomResponse);
+
+  // Joins an existing room.
+  // Users removed from a room cannot rejoin.
+  rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
+
+  // Lists rooms joined by the given user.
+  rpc ListMyRooms(ListMyRoomsRequest) returns (ListMyRoomsResponse);
+
+  // Returns paginated message history for a room.
+  rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse);
+
+  // Sends a message to a room.
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+
+  // Marks a room as read up to a specific sequence number.
+  rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
+
+  // Removes a member from a room.
+  // Only the room owner may remove members.
+  rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
+
+  // Soft deletes a message.
+  // Only the room owner may delete messages in the initial policy.
+  rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse);
+
+  // Soft deletes or deactivates a room.
+  // Only the room owner may deactivate a room.
+  rpc DeactivateRoom(DeactivateRoomRequest) returns (DeactivateRoomResponse);
+
+  // Streams newly created messages for a room.
+  rpc StreamMessages(StreamMessagesRequest) returns (stream StreamMessagesResponse);
+}
+
+// =============================================================================
+// Room
+// =============================================================================
+
+message CreateRoomRequest {
+  string creator_user_id = 1;
+  string title = 2;
+}
+
+message CreateRoomResponse {
+  ChatRoom room = 1;
+}
+
+message CreateBoardLinkedRoomRequest {
+  string creator_user_id = 1;
+  string board_id = 2;
+  string title = 3;
+}
+
+message CreateBoardLinkedRoomResponse {
+  ChatRoom room = 1;
+  bool already_exists = 2;
+}
+
+message JoinRoomRequest {
+  string room_id = 1;
+  string user_id = 2;
+}
+
+message JoinRoomResponse {
+  ChatRoomMember member = 1;
+}
+
+message ListMyRoomsRequest {
+  string user_id = 1;
+  PaginationRequest pagination = 2;
+}
+
+message ListMyRoomsResponse {
+  repeated ChatRoomSummary rooms = 1;
+  PaginationResponse pagination = 2;
+}
+
+message ChatRoom {
+  string room_id = 1;
+  RoomType room_type = 2;
+  string title = 3;
+  string linked_board_id = 4;
+  string owner_user_id = 5;
+  bool is_active = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  google.protobuf.Timestamp deleted_at = 9;
+}
+
+message ChatRoomSummary {
+  string room_id = 1;
+  RoomType room_type = 2;
+  string title = 3;
+  string linked_board_id = 4;
+  string owner_user_id = 5;
+  LastMessagePreview last_message = 6;
+  int64 unread_count = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message LastMessagePreview {
+  string message_id = 1;
+  MessageType message_type = 2;
+  string content_preview = 3;
+  string sender_user_id = 4;
+  int64 sequence_no = 5;
+  google.protobuf.Timestamp sent_at = 6;
+}
+
+enum RoomType {
+  ROOM_TYPE_UNSPECIFIED = 0;
+  ROOM_TYPE_GENERAL_GROUP = 1;
+  ROOM_TYPE_BOARD_LINKED_GROUP = 2;
+}
+
+// =============================================================================
+// Member
+// =============================================================================
+
+message ChatRoomMember {
+  string member_id = 1;
+  string room_id = 2;
+  string user_id = 3;
+  MemberRole role = 4;
+  MemberStatus status = 5;
+  int64 last_read_sequence_no = 6;
+  google.protobuf.Timestamp joined_at = 7;
+  google.protobuf.Timestamp left_at = 8;
+  google.protobuf.Timestamp removed_at = 9;
+  string removed_by_user_id = 10;
+}
+
+message RemoveMemberRequest {
+  string room_id = 1;
+  string owner_user_id = 2;
+  string target_user_id = 3;
+}
+
+message RemoveMemberResponse {
+  ChatRoomMember member = 1;
+}
+
+enum MemberRole {
+  MEMBER_ROLE_UNSPECIFIED = 0;
+  MEMBER_ROLE_OWNER = 1;
+  MEMBER_ROLE_MEMBER = 2;
+}
+
+enum MemberStatus {
+  MEMBER_STATUS_UNSPECIFIED = 0;
+  MEMBER_STATUS_ACTIVE = 1;
+  MEMBER_STATUS_LEFT = 2;
+  MEMBER_STATUS_REMOVED = 3;
+}
+
+// =============================================================================
+// Message
+// =============================================================================
+
+message GetMessagesRequest {
+  string room_id = 1;
+  string user_id = 2;
+  int32 limit = 3;
+
+  // Return messages with sequence_no < before_sequence_no.
+  // If zero, return the latest messages.
+  int64 before_sequence_no = 4;
+}
+
+message GetMessagesResponse {
+  repeated ChatMessage messages = 1;
+  // Cursor for the next request.
+  // If zero, there are no older messages.
+  int64 next_before_sequence_no = 2;
+}
+
+message SendMessageRequest {
+  string room_id = 1;
+  string sender_user_id = 2;
+  MessageType message_type = 3;
+  string content = 4;
+  string image_url = 5;
+  google.protobuf.Struct metadata = 6;
+}
+
+message SendMessageResponse {
+  ChatMessage message = 1;
+}
+
+message DeleteMessageRequest {
+  string room_id = 1;
+  string message_id = 2;
+  string owner_user_id = 3;
+}
+
+message DeleteMessageResponse {
+  ChatMessage message = 1;
+}
+
+message ChatMessage {
+  string message_id = 1;
+  string room_id = 2;
+  string sender_user_id = 3;
+  MessageType message_type = 4;
+  int64 sequence_no = 5;
+  string content = 6;
+  string image_url = 7;
+  google.protobuf.Struct metadata = 8;
+  bool is_deleted = 9;
+  string deleted_by_user_id = 10;
+  google.protobuf.Timestamp sent_at = 11;
+  google.protobuf.Timestamp deleted_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_TEXT = 1;
+  MESSAGE_TYPE_SYSTEM = 2;
+  MESSAGE_TYPE_IMAGE = 3;
+}
+
+// =============================================================================
+// Read State
+// =============================================================================
+
+message MarkAsReadRequest {
+  string room_id = 1;
+  string user_id = 2;
+  int64 last_read_sequence_no = 3;
+}
+
+message MarkAsReadResponse {
+  string room_id = 1;
+  string user_id = 2;
+  int64 last_read_sequence_no = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+// =============================================================================
+// Room Moderation
+// =============================================================================
+
+message DeactivateRoomRequest {
+  string room_id = 1;
+  string owner_user_id = 2;
+}
+
+message DeactivateRoomResponse {
+  ChatRoom room = 1;
+}
+
+// =============================================================================
+// Streaming
+// =============================================================================
+
+message StreamMessagesRequest {
+  string room_id = 1;
+  string user_id = 2;
+
+  // Optional resume cursor.
+  // If set, the server may send messages after this sequence number first.
+  int64 after_sequence_no = 3;
+}
+
+message StreamMessagesResponse {
+  ChatMessage message = 1;
+}
+
+// Local pagination messages are intentionally defined in this repository
+// to avoid hidden cross-repository proto dependencies in the initial phase.
+message PaginationRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message PaginationResponse {
+  string next_page_token = 1;
+}
