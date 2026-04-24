@@ -100,7 +100,7 @@ type txStore struct {
 func (t *txStore) CreateRoom(ctx context.Context, room domain.ChatRoom) error {
 	_, err := t.q.ExecContext(ctx, `
 INSERT INTO chat_rooms (id, room_type, title, linked_board_id, owner_user_id, is_active, deleted_at, created_at, updated_at)
-VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9)
+VALUES ($1,$2,$3,NULLIF($4,'')::uuid,$5,$6,$7,$8,$9)
 `, room.ID, room.RoomType, room.Title, room.LinkedBoardID, room.OwnerUserID, room.IsActive, room.DeletedAt, room.CreatedAt, room.UpdatedAt)
 	if isUniqueViolation(err) {
 		return domain.ErrAlreadyExists
@@ -153,7 +153,7 @@ LIMIT 1
 func (t *txStore) UpdateRoom(ctx context.Context, room domain.ChatRoom) error {
 	res, err := t.q.ExecContext(ctx, `
 UPDATE chat_rooms
-SET room_type = $2, title = $3, linked_board_id = NULLIF($4,''), owner_user_id = $5,
+SET room_type = $2, title = $3, linked_board_id = NULLIF($4,'')::uuid, owner_user_id = $5,
     is_active = $6, deleted_at = $7, updated_at = $8
 WHERE id = $1
 `, room.ID, room.RoomType, room.Title, room.LinkedBoardID, room.OwnerUserID, room.IsActive, room.DeletedAt, room.UpdatedAt)
@@ -254,7 +254,7 @@ func (t *txStore) CreateMember(ctx context.Context, m domain.ChatRoomMember) err
 	_, err := t.q.ExecContext(ctx, `
 INSERT INTO chat_room_members
 (id, room_id, user_id, role, status, joined_at, left_at, removed_at, removed_by_user_id, last_read_sequence_no, last_read_at, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12,$13)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,'')::uuid,$10,$11,$12,$13)
 `, m.ID, m.RoomID, m.UserID, m.Role, m.Status, m.JoinedAt, m.LeftAt, m.RemovedAt, m.RemovedByUserID, m.LastReadSequenceNo, m.LastReadAt, m.CreatedAt, m.UpdatedAt)
 	if isUniqueViolation(err) {
 		return domain.ErrAlreadyExists
@@ -266,7 +266,7 @@ func (t *txStore) UpdateMember(ctx context.Context, m domain.ChatRoomMember) err
 	res, err := t.q.ExecContext(ctx, `
 UPDATE chat_room_members
 SET role = $3, status = $4, joined_at = $5, left_at = $6, removed_at = $7,
-    removed_by_user_id = NULLIF($8,''), last_read_sequence_no = $9, last_read_at = $10, updated_at = $11
+    removed_by_user_id = NULLIF($8,'')::uuid, last_read_sequence_no = $9, last_read_at = $10, updated_at = $11
 WHERE room_id = $1 AND user_id = $2
 `, m.RoomID, m.UserID, m.Role, m.Status, m.JoinedAt, m.LeftAt, m.RemovedAt, m.RemovedByUserID, m.LastReadSequenceNo, m.LastReadAt, m.UpdatedAt)
 	if err != nil {
@@ -384,7 +384,7 @@ func (t *txStore) UpdateMessage(ctx context.Context, m domain.ChatMessage) error
 	res, err := t.q.ExecContext(ctx, `
 UPDATE chat_messages
 SET content = $3, image_url = $4, metadata_json = $5::jsonb, is_deleted = $6,
-    deleted_at = $7, deleted_by_user_id = NULLIF($8,''), updated_at = $9
+    deleted_at = $7, deleted_by_user_id = NULLIF($8,'')::uuid, updated_at = $9
 WHERE room_id = $1 AND id = $2
 `, m.RoomID, m.ID, m.Content, m.ImageURL, string(metaBytes), m.IsDeleted, m.DeletedAt, m.DeletedByUserID, m.UpdatedAt)
 	if err != nil {

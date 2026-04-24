@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate run run-memory test proto
+.PHONY: up down logs migrate run run-memory smoke test proto
 
 ifneq (,$(wildcard .env))
 include .env
@@ -22,6 +22,9 @@ run:
 
 run-memory:
 	CHAT_REPOSITORY=memory go run ./cmd/chat-service
+
+smoke:
+	go run ./cmd/smoke
 
 test:
 	GOCACHE=/tmp/go-build-cache go test ./...

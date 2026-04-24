@@ -33,6 +33,19 @@ make run
 
 Default runtime is PostgreSQL (`CHAT_REPOSITORY=postgres`).
 
+### 5. Run smoke check
+
+```bash
+make smoke
+```
+
+`make smoke` runs:
+- `CreateRoom`
+- `JoinRoom`
+- `SendMessage`
+- `GetMessages`
+- `MarkAsRead`
+
 ## Runtime Modes
 
 - `CHAT_REPOSITORY=postgres` (default): requires `CHAT_DB_DSN`
@@ -48,6 +61,7 @@ make run-memory
 make test      # run all tests
 make logs      # follow postgres logs
 make down      # stop local postgres
+make smoke     # grpc end-to-end smoke check
 make proto     # regenerate protobuf Go stubs
 ```
 
