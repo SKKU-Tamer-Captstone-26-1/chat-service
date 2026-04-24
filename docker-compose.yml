@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  chat-postgres:
+    image: postgres:16-alpine
+    container_name: chat-service-postgres
+    restart: unless-stopped
+    ports:
+      - "55432:5432"
+    environment:
+      POSTGRES_DB: chat_service
+      POSTGRES_USER: chat_user
+      POSTGRES_PASSWORD: chat_pass
+      TZ: UTC
+    volumes:
+      - chat_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat_user -d chat_service"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  chat_postgres_data:

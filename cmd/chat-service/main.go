@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log"
 	"net"
 	"os"
@@ -9,8 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/ontheblock/chat-service/internal/pubsub"
+	"github.com/ontheblock/chat-service/internal/repository"
 	"github.com/ontheblock/chat-service/internal/repository/memory"
+	postgresrepo "github.com/ontheblock/chat-service/internal/repository/postgres"
 	"github.com/ontheblock/chat-service/internal/service"
 	transportgrpc "github.com/ontheblock/chat-service/internal/transport/grpc"
 	chatv1 "github.com/ontheblock/chat-service/proto/chat/v1"
@@ -27,7 +32,12 @@ func main() {
 		log.Fatalf("listen failed: %v", err)
 	}
 
-	store := memory.NewStore()
+	store, cleanup, storeLabel, err := initRepository(ctx)
+	if err != nil {
+		log.Fatalf("repository init failed: %v", err)
+	}
+	defer cleanup()
+
 	ps := pubsub.NewMemoryRoomPubSub()
 	svc := service.New(store, store, ps)
 	handler := transportgrpc.NewServer(svc)
@@ -36,7 +46,7 @@ func main() {
 	chatv1.RegisterChatServiceServer(grpcServer, handler)
 
 	go func() {
-		log.Printf("chat-service listening on %s (in-memory repository)", addr)
+		log.Printf("chat-service listening on %s (%s repository)", addr, storeLabel)
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Printf("grpc serve stopped: %v", err)
 		}
@@ -65,4 +75,37 @@ func envOrDefault(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func initRepository(ctx context.Context) (runtimeRepository, func(), string, error) {
+	repoType := envOrDefault("CHAT_REPOSITORY", "postgres")
+	switch repoType {
+	case "memory":
+		store := memory.NewStore()
+		return store, func() {}, "memory", nil
+	case "postgres":
+		dsn := os.Getenv("CHAT_DB_DSN")
+		if dsn == "" {
+			return nil, nil, "", errors.New("CHAT_DB_DSN is required when CHAT_REPOSITORY=postgres")
+		}
+		db, err := sql.Open("pgx", dsn)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := db.PingContext(pingCtx); err != nil {
+			_ = db.Close()
+			return nil, nil, "", err
+		}
+		store := postgresrepo.New(db)
+		return store, func() { _ = db.Close() }, "postgres", nil
+	default:
+		return nil, nil, "", errors.New("CHAT_REPOSITORY must be one of: postgres, memory")
+	}
+}
+
+type runtimeRepository interface {
+	repository.TxRunner
+	repository.ChatRepository
 }
