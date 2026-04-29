@@ -78,7 +78,16 @@ func (s *Store) ListActiveMembersByJoinOrder(ctx context.Context, roomID string)
 }
 
 func (s *Store) CreateMessageWithNextSequence(ctx context.Context, msg domain.ChatMessage) (domain.ChatMessage, error) {
-	return s.asRepo().CreateMessageWithNextSequence(ctx, msg)
+	var saved domain.ChatMessage
+	err := s.WithTx(ctx, func(ctx context.Context, repo repository.ChatRepository) error {
+		var err error
+		saved, err = repo.CreateMessageWithNextSequence(ctx, msg)
+		return err
+	})
+	if err != nil {
+		return domain.ChatMessage{}, err
+	}
+	return saved, nil
 }
 
 func (s *Store) GetMessage(ctx context.Context, roomID, messageID string) (domain.ChatMessage, error) {
@@ -172,7 +181,7 @@ func (t *txStore) ListRoomsByUser(ctx context.Context, userID string, limit int,
 		limit = 20
 	}
 	lastUpdated, lastRoomID := decodeRoomToken(pageToken)
-	args := []any{userID, limit}
+	args := []any{userID, limit + 1}
 	q := `
 SELECT r.id, r.room_type, r.title, COALESCE(r.linked_board_id::text,''), r.owner_user_id, r.is_active, r.created_at, r.updated_at, r.deleted_at,
        COALESCE((SELECT COUNT(1) FROM chat_messages m WHERE m.room_id = r.id AND m.sequence_no > COALESCE(mem.last_read_sequence_no,0)), 0)
@@ -210,9 +219,10 @@ WHERE mem.user_id = $1 AND mem.status = 'ACTIVE'
 		return nil, "", err
 	}
 	nextToken := ""
-	if len(out) == limit {
-		last := out[len(out)-1].Room
+	if len(out) > limit {
+		last := out[limit-1].Room
 		nextToken = encodeRoomToken(last.UpdatedAt, last.ID)
+		out = out[:limit]
 	}
 	return out, nextToken, nil
 }
@@ -328,19 +338,22 @@ func (t *txStore) CreateMessageWithNextSequence(ctx context.Context, msg domain.
 	if err != nil {
 		return domain.ChatMessage{}, err
 	}
+	if _, err := t.q.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, msg.RoomID); err != nil {
+		return domain.ChatMessage{}, err
+	}
 	query := `
-WITH next_seq AS (
-  SELECT COALESCE(MAX(sequence_no), 0) + 1 AS seq
-  FROM chat_messages
-  WHERE room_id = $2
-)
 INSERT INTO chat_messages
 (id, room_id, sender_user_id, message_type, sequence_no, content, image_url, metadata_json, is_deleted, deleted_at, deleted_by_user_id, created_at, updated_at)
-SELECT $1, $2, $3, $4, seq, $5, $6, $7::jsonb, false, NULL, NULL, $8, $9
-FROM next_seq
+SELECT $1, $2, $3, $4,
+       COALESCE((SELECT MAX(sequence_no) + 1 FROM chat_messages WHERE room_id = $2), 1),
+       $5, $6, $7::jsonb, false, NULL, NULL, $8, $9
+WHERE EXISTS (SELECT 1 FROM chat_rooms WHERE id = $2)
 RETURNING sequence_no
 `
 	if err := t.q.QueryRowContext(ctx, query, msg.ID, msg.RoomID, msg.SenderUserID, msg.MessageType, msg.Content, msg.ImageURL, string(metaBytes), msg.CreatedAt, msg.UpdatedAt).Scan(&msg.SequenceNo); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.ChatMessage{}, domain.ErrNotFound
+		}
 		return domain.ChatMessage{}, err
 	}
 	return msg, nil

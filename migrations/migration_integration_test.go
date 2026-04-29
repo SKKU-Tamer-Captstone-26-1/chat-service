@@ -35,7 +35,7 @@ func TestMigrationAppliesAndCreatesKeyIndexes(t *testing.T) {
 	}
 	defer tx.Rollback()
 
-	schema := "chat_mig_" + strings.ToLower(id.New()[:12])
+	schema := "chat_mig_" + strings.ReplaceAll(strings.ToLower(id.New()[:12]), "-", "_")
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE SCHEMA %s`, schema)); err != nil {
 		t.Fatalf("create schema failed: %v", err)
 	}
