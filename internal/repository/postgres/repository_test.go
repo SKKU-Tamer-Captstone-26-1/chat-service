@@ -208,6 +208,15 @@ func TestListRoomsByUserReturnsUnreadCountsAndPagination(t *testing.T) {
 	if rooms[0].UnreadCnt != 3 {
 		t.Fatalf("expected unread count 3 for room2, got %d", rooms[0].UnreadCnt)
 	}
+	if rooms[0].LastMessage == nil {
+		t.Fatalf("expected last message for room2")
+	}
+	if rooms[0].LastMessage.SequenceNo != 3 {
+		t.Fatalf("expected last message sequence 3 for room2, got %d", rooms[0].LastMessage.SequenceNo)
+	}
+	if rooms[0].LastMessage.Content != "r2" {
+		t.Fatalf("expected last message content r2 for room2, got %q", rooms[0].LastMessage.Content)
+	}
 	if nextToken == "" {
 		t.Fatalf("expected next page token")
 	}
@@ -224,6 +233,12 @@ func TestListRoomsByUserReturnsUnreadCountsAndPagination(t *testing.T) {
 	}
 	if rooms[0].UnreadCnt != 1 {
 		t.Fatalf("expected unread count 1 for room1, got %d", rooms[0].UnreadCnt)
+	}
+	if rooms[0].LastMessage == nil {
+		t.Fatalf("expected last message for room1")
+	}
+	if rooms[0].LastMessage.SequenceNo != 2 {
+		t.Fatalf("expected last message sequence 2 for room1, got %d", rooms[0].LastMessage.SequenceNo)
 	}
 	if nextToken != "" {
 		t.Fatalf("expected empty next token on last page, got %q", nextToken)

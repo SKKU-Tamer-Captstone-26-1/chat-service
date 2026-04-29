@@ -77,6 +77,7 @@ type ChatMessage struct {
 }
 
 type ChatRoomSummary struct {
-	Room      ChatRoom
-	UnreadCnt int64
+	Room        ChatRoom
+	LastMessage *ChatMessage
+	UnreadCnt   int64
 }

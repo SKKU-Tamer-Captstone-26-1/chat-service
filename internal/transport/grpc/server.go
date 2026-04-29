@@ -93,12 +93,28 @@ func (s *Server) ListMyRooms(ctx context.Context, req *chatv1.ListMyRoomsRequest
 	}
 	resp := &chatv1.ListMyRoomsResponse{Pagination: &chatv1.PaginationResponse{NextPageToken: nextToken}}
 	for _, r := range rows {
+		var lastMessage *chatv1.LastMessagePreview
+		if r.LastMessage != nil {
+			contentPreview := r.LastMessage.Content
+			if r.LastMessage.IsDeleted {
+				contentPreview = ""
+			}
+			lastMessage = &chatv1.LastMessagePreview{
+				MessageId:      r.LastMessage.ID,
+				MessageType:    toPBMessageType(r.LastMessage.MessageType),
+				ContentPreview: contentPreview,
+				SenderUserId:   r.LastMessage.SenderUserID,
+				SequenceNo:     r.LastMessage.SequenceNo,
+				SentAt:         timestamppb.New(r.LastMessage.CreatedAt),
+			}
+		}
 		resp.Rooms = append(resp.Rooms, &chatv1.ChatRoomSummary{
 			RoomId:        r.Room.ID,
 			RoomType:      toPBRoomType(r.Room.RoomType),
 			Title:         r.Room.Title,
 			LinkedBoardId: r.Room.LinkedBoardID,
 			OwnerUserId:   r.Room.OwnerUserID,
+			LastMessage:   lastMessage,
 			UnreadCount:   r.UnreadCnt,
 			UpdatedAt:     timestamppb.New(r.Room.UpdatedAt),
 		})

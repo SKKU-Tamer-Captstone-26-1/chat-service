@@ -91,12 +91,22 @@ func (s *Store) ListRoomsByUser(_ context.Context, userID string, limit int, pag
 			continue
 		}
 		unread := int64(0)
+		var lastMessage *domain.ChatMessage
 		for _, msg := range s.messages[roomID] {
 			if msg.SequenceNo > m.LastReadSequenceNo {
 				unread++
 			}
+			if lastMessage == nil || msg.SequenceNo > lastMessage.SequenceNo {
+				msgCopy := msg
+				if msgCopy.IsDeleted {
+					msgCopy.Content = ""
+					msgCopy.ImageURL = ""
+					msgCopy.Metadata = nil
+				}
+				lastMessage = &msgCopy
+			}
 		}
-		rooms = append(rooms, domain.ChatRoomSummary{Room: room, UnreadCnt: unread})
+		rooms = append(rooms, domain.ChatRoomSummary{Room: room, LastMessage: lastMessage, UnreadCnt: unread})
 	}
 	sort.SliceStable(rooms, func(i, j int) bool {
 		return rooms[i].Room.UpdatedAt.After(rooms[j].Room.UpdatedAt)

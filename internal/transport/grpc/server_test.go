@@ -124,3 +124,45 @@ func TestGRPCStreamTerminatesForLeftMember(t *testing.T) {
 		t.Fatalf("expected FAILED_PRECONDITION, got %s", st.Code())
 	}
 }
+
+func TestGRPCListMyRoomsIncludesLastMessagePreview(t *testing.T) {
+	client, cleanup := startTestGRPCServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	createResp, err := client.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+	roomID := createResp.GetRoom().GetRoomId()
+
+	if _, err := client.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:       roomID,
+		SenderUserId: "owner",
+		MessageType:  chatv1.MessageType_MESSAGE_TYPE_TEXT,
+		Content:      "latest hello",
+	}); err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+
+	listResp, err := client.ListMyRooms(ctx, &chatv1.ListMyRoomsRequest{UserId: "owner"})
+	if err != nil {
+		t.Fatalf("list rooms failed: %v", err)
+	}
+	if len(listResp.GetRooms()) != 1 {
+		t.Fatalf("expected one room, got %d", len(listResp.GetRooms()))
+	}
+	last := listResp.GetRooms()[0].GetLastMessage()
+	if last == nil {
+		t.Fatalf("expected last_message preview")
+	}
+	if last.GetContentPreview() != "latest hello" {
+		t.Fatalf("expected content preview latest hello, got %q", last.GetContentPreview())
+	}
+	if last.GetSequenceNo() != 1 {
+		t.Fatalf("expected sequence 1, got %d", last.GetSequenceNo())
+	}
+	if last.GetSenderUserId() != "owner" {
+		t.Fatalf("expected sender owner, got %q", last.GetSenderUserId())
+	}
+}

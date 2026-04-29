@@ -184,9 +184,19 @@ func (t *txStore) ListRoomsByUser(ctx context.Context, userID string, limit int,
 	args := []any{userID, limit + 1}
 	q := `
 SELECT r.id, r.room_type, r.title, COALESCE(r.linked_board_id::text,''), r.owner_user_id, r.is_active, r.created_at, r.updated_at, r.deleted_at,
-       COALESCE((SELECT COUNT(1) FROM chat_messages m WHERE m.room_id = r.id AND m.sequence_no > COALESCE(mem.last_read_sequence_no,0)), 0)
+       COALESCE((SELECT COUNT(1) FROM chat_messages m WHERE m.room_id = r.id AND m.sequence_no > COALESCE(mem.last_read_sequence_no,0)), 0),
+       lm.id, lm.room_id, lm.sender_user_id, lm.message_type, lm.sequence_no, COALESCE(lm.content,''), COALESCE(lm.image_url,''), lm.metadata_json,
+       lm.is_deleted, lm.deleted_at, lm.deleted_by_user_id::text, lm.created_at, lm.updated_at
 FROM chat_room_members mem
 JOIN chat_rooms r ON r.id = mem.room_id
+LEFT JOIN LATERAL (
+  SELECT id, room_id, sender_user_id, message_type, sequence_no, content, image_url, metadata_json,
+         is_deleted, deleted_at, deleted_by_user_id, created_at, updated_at
+  FROM chat_messages
+  WHERE room_id = r.id
+  ORDER BY sequence_no DESC
+  LIMIT 1
+) lm ON true
 WHERE mem.user_id = $1 AND mem.status = 'ACTIVE'
 `
 	if lastUpdated != nil {
@@ -206,14 +216,60 @@ WHERE mem.user_id = $1 AND mem.status = 'ACTIVE'
 		var r domain.ChatRoom
 		var deletedAt sql.NullTime
 		var unread int64
-		if err := rows.Scan(&r.ID, &r.RoomType, &r.Title, &r.LinkedBoardID, &r.OwnerUserID, &r.IsActive, &r.CreatedAt, &r.UpdatedAt, &deletedAt, &unread); err != nil {
+		var msgID, msgRoomID, msgSenderUserID, msgContent, msgImageURL sql.NullString
+		var msgType domain.MessageType
+		var msgSequenceNo sql.NullInt64
+		var msgMeta []byte
+		var msgIsDeleted sql.NullBool
+		var msgDeletedAt, msgCreatedAt, msgUpdatedAt sql.NullTime
+		var msgDeletedBy sql.NullString
+		if err := rows.Scan(
+			&r.ID, &r.RoomType, &r.Title, &r.LinkedBoardID, &r.OwnerUserID, &r.IsActive, &r.CreatedAt, &r.UpdatedAt, &deletedAt, &unread,
+			&msgID, &msgRoomID, &msgSenderUserID, &msgType, &msgSequenceNo, &msgContent, &msgImageURL, &msgMeta,
+			&msgIsDeleted, &msgDeletedAt, &msgDeletedBy, &msgCreatedAt, &msgUpdatedAt,
+		); err != nil {
 			return nil, "", err
 		}
 		if deletedAt.Valid {
 			t := deletedAt.Time
 			r.DeletedAt = &t
 		}
-		out = append(out, domain.ChatRoomSummary{Room: r, UnreadCnt: unread})
+		summary := domain.ChatRoomSummary{Room: r, UnreadCnt: unread}
+		if msgID.Valid {
+			lastMessage := domain.ChatMessage{
+				ID:           msgID.String,
+				RoomID:       msgRoomID.String,
+				SenderUserID: msgSenderUserID.String,
+				MessageType:  msgType,
+				SequenceNo:   msgSequenceNo.Int64,
+				Content:      msgContent.String,
+				ImageURL:     msgImageURL.String,
+				IsDeleted:    msgIsDeleted.Valid && msgIsDeleted.Bool,
+			}
+			if len(msgMeta) > 0 {
+				_ = json.Unmarshal(msgMeta, &lastMessage.Metadata)
+			}
+			if msgDeletedAt.Valid {
+				t := msgDeletedAt.Time
+				lastMessage.DeletedAt = &t
+			}
+			if msgDeletedBy.Valid {
+				lastMessage.DeletedByUserID = msgDeletedBy.String
+			}
+			if msgCreatedAt.Valid {
+				lastMessage.CreatedAt = msgCreatedAt.Time
+			}
+			if msgUpdatedAt.Valid {
+				lastMessage.UpdatedAt = msgUpdatedAt.Time
+			}
+			if lastMessage.IsDeleted {
+				lastMessage.Content = ""
+				lastMessage.ImageURL = ""
+				lastMessage.Metadata = nil
+			}
+			summary.LastMessage = &lastMessage
+		}
+		out = append(out, summary)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
