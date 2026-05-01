@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -222,5 +223,173 @@ func TestMessageSequenceOrderingAndCursor(t *testing.T) {
 	}
 	if next2 != 0 {
 		t.Fatalf("expected next cursor 0, got %d", next2)
+	}
+}
+
+type scriptedSubscription struct {
+	ch chan domain.ChatMessage
+}
+
+func (s *scriptedSubscription) C() <-chan domain.ChatMessage { return s.ch }
+func (s *scriptedSubscription) Close()                       {}
+
+type scriptedPubSub struct {
+	mu    sync.Mutex
+	sub   *scriptedSubscription
+	ready chan struct{}
+}
+
+func newScriptedPubSub() *scriptedPubSub {
+	return &scriptedPubSub{ready: make(chan struct{})}
+}
+
+func (p *scriptedPubSub) Publish(_ context.Context, _ string, msg domain.ChatMessage) {
+	p.mu.Lock()
+	sub := p.sub
+	p.mu.Unlock()
+	if sub == nil {
+		return
+	}
+	sub.ch <- msg
+}
+
+func (p *scriptedPubSub) Subscribe(_ context.Context, _ string, buffer int) pubsub.Subscription {
+	if buffer <= 0 {
+		buffer = 64
+	}
+	sub := &scriptedSubscription{ch: make(chan domain.ChatMessage, buffer)}
+	p.mu.Lock()
+	p.sub = sub
+	p.mu.Unlock()
+	close(p.ready)
+	return sub
+}
+
+func (p *scriptedPubSub) waitForSubscription(t *testing.T) {
+	t.Helper()
+	select {
+	case <-p.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription was not established")
+	}
+}
+
+func TestStreamMessagesCatchUpIsLosslessBeyondOneBatch(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 150; i++ {
+		if _, err := svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeText, "m", "", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	streamCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msgCh, errCh := svc.StreamMessages(streamCtx, room.ID, "owner", 25)
+	got := make([]int64, 0, 125)
+	timeout := time.After(3 * time.Second)
+	for len(got) < 125 {
+		select {
+		case msg, ok := <-msgCh:
+			if !ok {
+				t.Fatalf("stream closed early after %d messages", len(got))
+			}
+			got = append(got, msg.SequenceNo)
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("stream returned error: %v", err)
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for catch-up messages, got %d", len(got))
+		}
+	}
+
+	if got[0] != 26 {
+		t.Fatalf("expected first replayed sequence 26, got %d", got[0])
+	}
+	if got[len(got)-1] != 150 {
+		t.Fatalf("expected last replayed sequence 150, got %d", got[len(got)-1])
+	}
+	for i, seq := range got {
+		expected := int64(i + 26)
+		if seq != expected {
+			t.Fatalf("expected contiguous sequence %d, got %d", expected, seq)
+		}
+	}
+}
+
+func TestStreamMessagesBackfillsMissingGapFromRepository(t *testing.T) {
+	store := memory.NewStore()
+	ps := newScriptedPubSub()
+	svc := New(store, store, ps)
+	ctx := context.Background()
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeText, "m1", "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	streamCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	msgCh, errCh := svc.StreamMessages(streamCtx, room.ID, "owner", 1)
+	ps.waitForSubscription(t)
+
+	now := time.Now().UTC()
+	msg2, err := store.CreateMessageWithNextSequence(ctx, domain.ChatMessage{
+		ID:           "msg-2",
+		RoomID:       room.ID,
+		SenderUserID: "owner",
+		MessageType:  domain.MessageTypeText,
+		Content:      "m2",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg3, err := store.CreateMessageWithNextSequence(ctx, domain.ChatMessage{
+		ID:           "msg-3",
+		RoomID:       room.ID,
+		SenderUserID: "owner",
+		MessageType:  domain.MessageTypeText,
+		Content:      "m3",
+		CreatedAt:    now.Add(time.Millisecond),
+		UpdatedAt:    now.Add(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ps.Publish(ctx, room.ID, msg3)
+
+	got := make([]int64, 0, 2)
+	timeout := time.After(2 * time.Second)
+	for len(got) < 2 {
+		select {
+		case msg, ok := <-msgCh:
+			if !ok {
+				t.Fatalf("stream closed early after %d messages", len(got))
+			}
+			got = append(got, msg.SequenceNo)
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("stream returned error: %v", err)
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for live backfill messages, got %v", got)
+		}
+	}
+
+	if got[0] != msg2.SequenceNo || got[1] != msg3.SequenceNo {
+		t.Fatalf("expected backfilled sequences [%d %d], got %v", msg2.SequenceNo, msg3.SequenceNo, got)
 	}
 }

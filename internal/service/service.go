@@ -18,6 +18,8 @@ var (
 	ErrMemberRemoved = errors.New("member is removed")
 )
 
+const streamCatchUpBatchSize = 100
+
 type ChatService struct {
 	tx     repository.TxRunner
 	repo   repository.ChatRepository
@@ -440,28 +442,33 @@ func (s *ChatService) StreamMessages(ctx context.Context, roomID, userID string,
 			return
 		}
 
-		if afterSequenceNo > 0 {
-			msgs, _, err := s.repo.ListMessagesBefore(ctx, roomID, 0, 100)
-			if err != nil {
-				errCh <- err
-				return
-			}
-			for i := len(msgs) - 1; i >= 0; i-- {
-				if msgs[i].SequenceNo <= afterSequenceNo {
-					continue
-				}
-				select {
-				case out <- msgs[i]:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-
 		sub := s.pubsub.Subscribe(ctx, roomID, 256)
 		defer sub.Close()
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
+		pending := map[int64]domain.ChatMessage{}
+		lastDelivered := afterSequenceNo
+
+		for {
+			msgs, err := s.repo.ListMessagesAfter(ctx, roomID, lastDelivered, streamCatchUpBatchSize)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			for _, msg := range msgs {
+				pending[msg.SequenceNo] = msg
+			}
+			s.drainSubscription(sub.C(), pending)
+
+			var flushErr error
+			lastDelivered, flushErr = s.flushPendingMessages(ctx, out, pending, lastDelivered)
+			if flushErr != nil {
+				return
+			}
+			if len(msgs) < streamCatchUpBatchSize {
+				break
+			}
+		}
 
 		for {
 			select {
@@ -485,9 +492,23 @@ func (s *ChatService) StreamMessages(ctx context.Context, roomID, userID string,
 				if !ok {
 					return
 				}
-				select {
-				case out <- msg:
-				case <-ctx.Done():
+				if msg.SequenceNo <= lastDelivered {
+					continue
+				}
+				pending[msg.SequenceNo] = msg
+				if msg.SequenceNo > lastDelivered+1 {
+					msgs, err := s.repo.ListMessagesAfter(ctx, roomID, lastDelivered, streamCatchUpBatchSize)
+					if err != nil {
+						errCh <- err
+						return
+					}
+					for _, catchUp := range msgs {
+						pending[catchUp.SequenceNo] = catchUp
+					}
+				}
+				var flushErr error
+				lastDelivered, flushErr = s.flushPendingMessages(ctx, out, pending, lastDelivered)
+				if flushErr != nil {
 					return
 				}
 			}
@@ -510,4 +531,35 @@ func (s *ChatService) validateActiveMembership(ctx context.Context, roomID, user
 		return domain.ChatRoom{}, domain.ChatRoomMember{}, err
 	}
 	return room, member, nil
+}
+
+func (s *ChatService) drainSubscription(sub <-chan domain.ChatMessage, pending map[int64]domain.ChatMessage) {
+	for {
+		select {
+		case msg, ok := <-sub:
+			if !ok {
+				return
+			}
+			pending[msg.SequenceNo] = msg
+		default:
+			return
+		}
+	}
+}
+
+func (s *ChatService) flushPendingMessages(ctx context.Context, out chan<- domain.ChatMessage, pending map[int64]domain.ChatMessage, lastDelivered int64) (int64, error) {
+	for {
+		next := lastDelivered + 1
+		msg, ok := pending[next]
+		if !ok {
+			return lastDelivered, nil
+		}
+		delete(pending, next)
+		select {
+		case out <- msg:
+			lastDelivered = next
+		case <-ctx.Done():
+			return lastDelivered, ctx.Err()
+		}
+	}
 }

@@ -102,6 +102,10 @@ func (s *Store) ListMessagesBefore(ctx context.Context, roomID string, beforeSeq
 	return s.asRepo().ListMessagesBefore(ctx, roomID, beforeSequence, limit)
 }
 
+func (s *Store) ListMessagesAfter(ctx context.Context, roomID string, afterSequence int64, limit int) ([]domain.ChatMessage, error) {
+	return s.asRepo().ListMessagesAfter(ctx, roomID, afterSequence, limit)
+}
+
 type txStore struct {
 	q Runner
 }
@@ -518,6 +522,50 @@ LIMIT $2
 	}
 	next := out[len(out)-1].SequenceNo
 	return out, next, nil
+}
+
+func (t *txStore) ListMessagesAfter(ctx context.Context, roomID string, afterSequence int64, limit int) ([]domain.ChatMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := t.q.QueryContext(ctx, `
+SELECT id, room_id, sender_user_id, message_type, sequence_no, COALESCE(content,''), COALESCE(image_url,''), metadata_json,
+       is_deleted, deleted_at, deleted_by_user_id::text, created_at, updated_at
+FROM chat_messages
+WHERE room_id = $1 AND sequence_no > $2
+ORDER BY sequence_no ASC
+LIMIT $3
+`, roomID, afterSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []domain.ChatMessage{}
+	for rows.Next() {
+		var m domain.ChatMessage
+		var meta []byte
+		var deletedAt sql.NullTime
+		var deletedBy sql.NullString
+		if err := rows.Scan(&m.ID, &m.RoomID, &m.SenderUserID, &m.MessageType, &m.SequenceNo, &m.Content, &m.ImageURL, &meta, &m.IsDeleted, &deletedAt, &deletedBy, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if len(meta) > 0 {
+			_ = json.Unmarshal(meta, &m.Metadata)
+		}
+		if deletedAt.Valid {
+			t := deletedAt.Time
+			m.DeletedAt = &t
+		}
+		if deletedBy.Valid {
+			m.DeletedByUserID = deletedBy.String
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func isUniqueViolation(err error) bool {

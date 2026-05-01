@@ -253,3 +253,27 @@ func (s *Store) ListMessagesBefore(_ context.Context, roomID string, beforeSeque
 	next := page[len(page)-1].SequenceNo
 	return page, next, nil
 }
+
+func (s *Store) ListMessagesAfter(_ context.Context, roomID string, afterSequence int64, limit int) ([]domain.ChatMessage, error) {
+	roomMsgs, ok := s.messages[roomID]
+	if !ok {
+		return []domain.ChatMessage{}, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	all := make([]domain.ChatMessage, 0, len(roomMsgs))
+	for _, msg := range roomMsgs {
+		if msg.SequenceNo <= afterSequence {
+			continue
+		}
+		all = append(all, msg)
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		return all[i].SequenceNo < all[j].SequenceNo
+	})
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	return all, nil
+}

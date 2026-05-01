@@ -26,4 +26,5 @@ type ChatRepository interface {
 	GetMessage(ctx context.Context, roomID, messageID string) (domain.ChatMessage, error)
 	UpdateMessage(ctx context.Context, msg domain.ChatMessage) error
 	ListMessagesBefore(ctx context.Context, roomID string, beforeSequence int64, limit int) ([]domain.ChatMessage, int64, error)
+	ListMessagesAfter(ctx context.Context, roomID string, afterSequence int64, limit int) ([]domain.ChatMessage, error)
 }
