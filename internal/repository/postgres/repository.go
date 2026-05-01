@@ -221,7 +221,7 @@ WHERE mem.user_id = $1 AND mem.status = 'ACTIVE'
 		var deletedAt sql.NullTime
 		var unread int64
 		var msgID, msgRoomID, msgSenderUserID, msgContent, msgImageURL sql.NullString
-		var msgType domain.MessageType
+		var msgType sql.NullString
 		var msgSequenceNo sql.NullInt64
 		var msgMeta []byte
 		var msgIsDeleted sql.NullBool
@@ -244,7 +244,7 @@ WHERE mem.user_id = $1 AND mem.status = 'ACTIVE'
 				ID:           msgID.String,
 				RoomID:       msgRoomID.String,
 				SenderUserID: msgSenderUserID.String,
-				MessageType:  msgType,
+				MessageType:  domain.MessageType(msgType.String),
 				SequenceNo:   msgSequenceNo.Int64,
 				Content:      msgContent.String,
 				ImageURL:     msgImageURL.String,

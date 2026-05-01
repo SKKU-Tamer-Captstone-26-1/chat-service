@@ -244,3 +244,92 @@ func TestListRoomsByUserReturnsUnreadCountsAndPagination(t *testing.T) {
 		t.Fatalf("expected empty next token on last page, got %q", nextToken)
 	}
 }
+
+func TestListRoomsByUserHandlesRoomsWithoutLastMessage(t *testing.T) {
+	store, _ := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	userID := id.New()
+
+	room1 := domain.ChatRoom{
+		ID:          id.New(),
+		RoomType:    domain.RoomTypeGeneralGroup,
+		Title:       "room-with-message",
+		OwnerUserID: userID,
+		IsActive:    true,
+		CreatedAt:   now.Add(-2 * time.Hour),
+		UpdatedAt:   now.Add(-2 * time.Hour),
+	}
+	room2 := domain.ChatRoom{
+		ID:          id.New(),
+		RoomType:    domain.RoomTypeGeneralGroup,
+		Title:       "room-without-message",
+		OwnerUserID: userID,
+		IsActive:    true,
+		CreatedAt:   now.Add(-1 * time.Hour),
+		UpdatedAt:   now.Add(-1 * time.Hour),
+	}
+	for _, room := range []domain.ChatRoom{room1, room2} {
+		if err := store.CreateRoom(ctx, room); err != nil {
+			t.Fatalf("create room failed: %v", err)
+		}
+		if err := store.CreateMember(ctx, domain.ChatRoomMember{
+			ID:        id.New(),
+			RoomID:    room.ID,
+			UserID:    userID,
+			Role:      domain.MemberRoleOwner,
+			Status:    domain.MemberStatusActive,
+			JoinedAt:  room.CreatedAt,
+			CreatedAt: room.CreatedAt,
+			UpdatedAt: room.CreatedAt,
+		}); err != nil {
+			t.Fatalf("create member failed: %v", err)
+		}
+	}
+
+	if _, err := store.CreateMessageWithNextSequence(ctx, domain.ChatMessage{
+		ID:           id.New(),
+		RoomID:       room1.ID,
+		SenderUserID: userID,
+		MessageType:  domain.MessageTypeText,
+		Content:      "hello",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("create message failed: %v", err)
+	}
+
+	rooms, nextToken, err := store.ListRoomsByUser(ctx, userID, 1, "")
+	if err != nil {
+		t.Fatalf("list rooms first page failed: %v", err)
+	}
+	if len(rooms) != 1 {
+		t.Fatalf("expected 1 room on first page, got %d", len(rooms))
+	}
+	if rooms[0].Room.ID != room2.ID {
+		t.Fatalf("expected newer room without messages first, got %s", rooms[0].Room.ID)
+	}
+	if rooms[0].LastMessage != nil {
+		t.Fatalf("expected nil last message for room without messages")
+	}
+	if nextToken == "" {
+		t.Fatalf("expected next page token")
+	}
+
+	rooms, nextToken, err = store.ListRoomsByUser(ctx, userID, 1, nextToken)
+	if err != nil {
+		t.Fatalf("list rooms second page failed: %v", err)
+	}
+	if len(rooms) != 1 {
+		t.Fatalf("expected 1 room on second page, got %d", len(rooms))
+	}
+	if rooms[0].Room.ID != room1.ID {
+		t.Fatalf("expected room with message on second page, got %s", rooms[0].Room.ID)
+	}
+	if rooms[0].LastMessage == nil {
+		t.Fatalf("expected last message on second page")
+	}
+	if nextToken != "" {
+		t.Fatalf("expected empty next token on last page, got %q", nextToken)
+	}
+}
