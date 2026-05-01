@@ -318,7 +318,16 @@ func (s *ChatService) SendMessage(ctx context.Context, roomID, senderUserID stri
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	saved, err := s.repo.CreateMessageWithNextSequence(ctx, msg)
+	var saved domain.ChatMessage
+	err = s.tx.WithTx(ctx, func(ctx context.Context, repo repository.ChatRepository) error {
+		var txErr error
+		saved, txErr = repo.CreateMessageWithNextSequence(ctx, msg)
+		if txErr != nil {
+			return txErr
+		}
+		room.UpdatedAt = now
+		return repo.UpdateRoom(ctx, room)
+	})
 	if err != nil {
 		return domain.ChatMessage{}, err
 	}
