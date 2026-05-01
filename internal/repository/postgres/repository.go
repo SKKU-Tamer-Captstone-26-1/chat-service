@@ -202,6 +202,8 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) lm ON true
 WHERE mem.user_id = $1 AND mem.status = 'ACTIVE'
+  AND r.is_active = true
+  AND r.deleted_at IS NULL
 `
 	if lastUpdated != nil {
 		args = append(args, *lastUpdated, lastRoomID)
