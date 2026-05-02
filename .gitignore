@@ -36,3 +36,4 @@ go.work.sum
 # OS/local runtime artifacts
 .DS_Store
 *.log
+.claude/

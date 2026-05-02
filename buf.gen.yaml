@@ -1,0 +1,24 @@
+version: v2
+clean: true
+
+# inputs는 module (레포와 유사함) buf.build를 통해 public으로 레포를 만들어놔서 바로 가능
+inputs:
+  - module: buf.build/on-the-block/infra
+    paths:
+      - chat/v1
+      - common/v1
+
+# 사용할 플러그인 내용들 같이 가져오는 buf 설정 - 그래들, 메이븐과 같은 역할
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.35.2 # 플러그인 버전 명시
+    revision: 1 # 해당 내용도 버전 관련 설정
+    out: proto #~/proto/ 디렉토리에 저장
+    opt:
+      - paths=source_relative #infra 디렉토리내 구조를 그대로 따름 
+
+  - remote: buf.build/grpc/go:v1.5.1
+    revision: 1
+    out: proto #~/proto/ 디렉토리에 저장
+    opt:
+      - paths=source_relative
+      - require_unimplemented_servers=false #gRPC 서버를 구현할 때, 미구현 상태를 처리하는 Unimplemented Server를 강제로 포함시키지 않는 설정 - 미구현 api에 대해 빌드가 안되게하는 설정
