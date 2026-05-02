@@ -9,12 +9,14 @@ inputs:
 
 # 사용할 플러그인 내용들 같이 가져오는 buf 설정 - 그래들, 메이븐과 같은 역할
 plugins:
-  - remote: buf.build/protocolbuffers/go
+  - remote: buf.build/protocolbuffers/go:v1.35.2 # 플러그인 버전 명시
+    revision: 1 # 해당 내용도 버전 관련 설정
     out: proto #~/proto/ 디렉토리에 저장
     opt:
       - paths=source_relative #infra 디렉토리내 구조를 그대로 따름 
 
-  - remote: buf.build/grpc/go
+  - remote: buf.build/grpc/go:v1.5.1
+    revision: 1
     out: proto #~/proto/ 디렉토리에 저장
     opt:
       - paths=source_relative
