@@ -1,4 +1,5 @@
 version: v2
+clean: true
 
 # inputs는 module (레포와 유사함) buf.build를 통해 public으로 레포를 만들어놔서 바로 가능
 inputs:
