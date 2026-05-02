@@ -10,12 +10,12 @@ inputs:
 # 사용할 플러그인 내용들 같이 가져오는 buf 설정 - 그래들, 메이븐과 같은 역할
 plugins:
   - remote: buf.build/protocolbuffers/go
-    out: proto
+    out: proto #~/proto/ 디렉토리에 저장
     opt:
-      - paths=source_relative
+      - paths=source_relative #infra 디렉토리내 구조를 그대로 따름 
 
   - remote: buf.build/grpc/go
-    out: proto
+    out: proto #~/proto/ 디렉토리에 저장
     opt:
       - paths=source_relative
-      - require_unimplemented_servers=false
+      - require_unimplemented_servers=false #gRPC 서버를 구현할 때, 미구현 상태를 처리하는 Unimplemented Server를 강제로 포함시키지 않는 설정 - 미구현 api에 대해 에러를 클라이언트한테 주는 설정
