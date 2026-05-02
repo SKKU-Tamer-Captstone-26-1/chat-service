@@ -18,4 +18,4 @@ plugins:
     out: proto #~/proto/ 디렉토리에 저장
     opt:
       - paths=source_relative
-      - require_unimplemented_servers=false #gRPC 서버를 구현할 때, 미구현 상태를 처리하는 Unimplemented Server를 강제로 포함시키지 않는 설정 - 미구현 api에 대해 에러를 클라이언트한테 주는 설정
+      - require_unimplemented_servers=false #gRPC 서버를 구현할 때, 미구현 상태를 처리하는 Unimplemented Server를 강제로 포함시키지 않는 설정 - 미구현 api에 대해 빌드가 안되게하는 설정
