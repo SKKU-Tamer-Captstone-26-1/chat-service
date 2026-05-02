@@ -1,11 +1,13 @@
 version: v2
 
+# inputs는 module (레포와 유사함) buf.build를 통해 public으로 레포를 만들어놔서 바로 가능
 inputs:
   - module: buf.build/on-the-block/infra
     paths:
       - chat/v1
       - common/v1
 
+# 사용할 플러그인 내용들 같이 가져오는 buf 설정 - 그래들, 메이븐과 같은 역할
 plugins:
   - remote: buf.build/protocolbuffers/go
     out: proto
