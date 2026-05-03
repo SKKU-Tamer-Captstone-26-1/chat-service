@@ -98,6 +98,8 @@ func (s *Server) ListMyRooms(ctx context.Context, req *chatv1.ListMyRoomsRequest
 			contentPreview := r.LastMessage.Content
 			if r.LastMessage.IsDeleted {
 				contentPreview = ""
+			} else if r.LastMessage.MessageType == domain.MessageTypeImage {
+				contentPreview = "[Image]"
 			}
 			lastMessage = &chatv1.LastMessagePreview{
 				MessageId:      r.LastMessage.ID,

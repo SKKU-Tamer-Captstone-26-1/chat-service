@@ -167,6 +167,144 @@ func TestGRPCListMyRoomsIncludesLastMessagePreview(t *testing.T) {
 	}
 }
 
+func TestGRPCSendImageMessagePersistsImageFields(t *testing.T) {
+	client, cleanup := startTestGRPCServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	createResp, err := client.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+	roomID := createResp.GetRoom().GetRoomId()
+
+	sendResp, err := client.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:       roomID,
+		SenderUserId: "owner",
+		MessageType:  chatv1.MessageType_MESSAGE_TYPE_IMAGE,
+		ImageUrl:     "https://storage.googleapis.com/bucket/image.png",
+	})
+	if err != nil {
+		t.Fatalf("send image failed: %v", err)
+	}
+	if sendResp.GetMessage().GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
+		t.Fatalf("expected IMAGE message type, got %s", sendResp.GetMessage().GetMessageType())
+	}
+	if sendResp.GetMessage().GetImageUrl() != "https://storage.googleapis.com/bucket/image.png" {
+		t.Fatalf("expected image_url to round-trip, got %q", sendResp.GetMessage().GetImageUrl())
+	}
+	if sendResp.GetMessage().GetContent() != "" {
+		t.Fatalf("expected empty content for image message, got %q", sendResp.GetMessage().GetContent())
+	}
+
+	msgsResp, err := client.GetMessages(ctx, &chatv1.GetMessagesRequest{RoomId: roomID, UserId: "owner", Limit: 20})
+	if err != nil {
+		t.Fatalf("get messages failed: %v", err)
+	}
+	if len(msgsResp.GetMessages()) != 1 {
+		t.Fatalf("expected one image message")
+	}
+	if msgsResp.GetMessages()[0].GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
+		t.Fatalf("expected stored IMAGE message type, got %s", msgsResp.GetMessages()[0].GetMessageType())
+	}
+	if msgsResp.GetMessages()[0].GetImageUrl() != "https://storage.googleapis.com/bucket/image.png" {
+		t.Fatalf("expected stored image_url, got %q", msgsResp.GetMessages()[0].GetImageUrl())
+	}
+}
+
+func TestGRPCListMyRoomsUsesImagePreviewPlaceholder(t *testing.T) {
+	client, cleanup := startTestGRPCServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	createResp, err := client.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+	roomID := createResp.GetRoom().GetRoomId()
+
+	if _, err := client.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:       roomID,
+		SenderUserId: "owner",
+		MessageType:  chatv1.MessageType_MESSAGE_TYPE_IMAGE,
+		ImageUrl:     "https://storage.googleapis.com/bucket/image.png",
+	}); err != nil {
+		t.Fatalf("send image failed: %v", err)
+	}
+
+	listResp, err := client.ListMyRooms(ctx, &chatv1.ListMyRoomsRequest{UserId: "owner"})
+	if err != nil {
+		t.Fatalf("list rooms failed: %v", err)
+	}
+	if len(listResp.GetRooms()) != 1 {
+		t.Fatalf("expected one room, got %d", len(listResp.GetRooms()))
+	}
+	last := listResp.GetRooms()[0].GetLastMessage()
+	if last == nil {
+		t.Fatalf("expected last_message preview")
+	}
+	if last.GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
+		t.Fatalf("expected image preview type, got %s", last.GetMessageType())
+	}
+	if last.GetContentPreview() != "[Image]" {
+		t.Fatalf("expected image placeholder preview, got %q", last.GetContentPreview())
+	}
+}
+
+func TestGRPCStreamDeliversImageMessageLive(t *testing.T) {
+	client, cleanup := startTestGRPCServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	createResp, err := client.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+	roomID := createResp.GetRoom().GetRoomId()
+
+	stream, err := client.StreamMessages(ctx, &chatv1.StreamMessagesRequest{RoomId: roomID, UserId: "owner"})
+	if err != nil {
+		t.Fatalf("stream start failed: %v", err)
+	}
+
+	if _, err := client.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:       roomID,
+		SenderUserId: "owner",
+		MessageType:  chatv1.MessageType_MESSAGE_TYPE_IMAGE,
+		ImageUrl:     "https://storage.googleapis.com/bucket/live-image.png",
+	}); err != nil {
+		t.Fatalf("send image failed: %v", err)
+	}
+
+	recvCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	done := make(chan *chatv1.StreamMessagesResponse, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := stream.Recv()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		done <- resp
+	}()
+
+	select {
+	case resp := <-done:
+		msg := resp.GetMessage()
+		if msg.GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
+			t.Fatalf("expected IMAGE stream message, got %s", msg.GetMessageType())
+		}
+		if msg.GetImageUrl() != "https://storage.googleapis.com/bucket/live-image.png" {
+			t.Fatalf("expected live image_url, got %q", msg.GetImageUrl())
+		}
+	case err := <-errCh:
+		t.Fatalf("stream recv failed: %v", err)
+	case <-recvCtx.Done():
+		t.Fatal("timed out waiting for live image message")
+	}
+}
+
 func TestGRPCSendMessageRejectsInvalidImagePayload(t *testing.T) {
 	client, cleanup := startTestGRPCServer(t)
 	defer cleanup()
