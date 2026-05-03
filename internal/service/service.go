@@ -308,6 +308,9 @@ func (s *ChatService) SendMessage(ctx context.Context, roomID, senderUserID stri
 	if !room.IsActive || member.Status != domain.MemberStatusActive {
 		return domain.ChatMessage{}, domain.ErrInvalidState
 	}
+	if err := validateMessagePayload(messageType, content, imageURL); err != nil {
+		return domain.ChatMessage{}, err
+	}
 	now := s.now().UTC()
 	msg := domain.ChatMessage{
 		ID:           id.New(),
@@ -531,6 +534,33 @@ func (s *ChatService) validateActiveMembership(ctx context.Context, roomID, user
 		return domain.ChatRoom{}, domain.ChatRoomMember{}, err
 	}
 	return room, member, nil
+}
+
+func validateMessagePayload(messageType domain.MessageType, content, imageURL string) error {
+	trimmedContent := strings.TrimSpace(content)
+	trimmedImageURL := strings.TrimSpace(imageURL)
+
+	switch messageType {
+	case domain.MessageTypeText:
+		if trimmedContent == "" {
+			return domain.ErrInvalidArgument
+		}
+		if trimmedImageURL != "" {
+			return domain.ErrInvalidArgument
+		}
+	case domain.MessageTypeImage:
+		if trimmedImageURL == "" {
+			return domain.ErrInvalidArgument
+		}
+	case domain.MessageTypeSystem:
+		if trimmedContent == "" {
+			return domain.ErrInvalidArgument
+		}
+	default:
+		return domain.ErrInvalidArgument
+	}
+
+	return nil
 }
 
 func (s *ChatService) drainSubscription(sub <-chan domain.ChatMessage, pending map[int64]domain.ChatMessage) {

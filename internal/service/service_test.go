@@ -169,7 +169,7 @@ func TestDeletedMessagesReturnedAsPlaceholder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg, err := svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeText, "secret", "http://x", map[string]any{"k": "v"})
+	msg, err := svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeText, "secret", "", map[string]any{"k": "v"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +223,68 @@ func TestMessageSequenceOrderingAndCursor(t *testing.T) {
 	}
 	if next2 != 0 {
 		t.Fatalf("expected next cursor 0, got %d", next2)
+	}
+}
+
+func TestSendMessageRejectsEmptyText(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeText, "   ", "", nil)
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestSendMessageRejectsTextWithImageURL(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeText, "hello", "https://example.com/x.png", nil)
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestSendMessageRejectsImageWithoutURL(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeImage, "", "", nil)
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestSendMessageAllowsImageWithURL(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeImage, "", "https://example.com/x.png", map[string]any{"width": 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.MessageType != domain.MessageTypeImage {
+		t.Fatalf("expected IMAGE, got %s", msg.MessageType)
+	}
+	if msg.ImageURL != "https://example.com/x.png" {
+		t.Fatalf("expected image_url to be stored, got %q", msg.ImageURL)
 	}
 }
 

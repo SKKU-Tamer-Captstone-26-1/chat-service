@@ -166,3 +166,30 @@ func TestGRPCListMyRoomsIncludesLastMessagePreview(t *testing.T) {
 		t.Fatalf("expected sender owner, got %q", last.GetSenderUserId())
 	}
 }
+
+func TestGRPCSendMessageRejectsInvalidImagePayload(t *testing.T) {
+	client, cleanup := startTestGRPCServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	createResp, err := client.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+
+	_, err = client.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:       createResp.GetRoom().GetRoomId(),
+		SenderUserId: "owner",
+		MessageType:  chatv1.MessageType_MESSAGE_TYPE_IMAGE,
+	})
+	if err == nil {
+		t.Fatalf("expected invalid image payload to fail")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %v", err)
+	}
+	if st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %s", st.Code())
+	}
+}

@@ -247,6 +247,8 @@ func mapError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, domain.ErrAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, domain.ErrInvalidArgument):
+		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, domain.ErrRoomInactive):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, domain.ErrPermissionDenied):
