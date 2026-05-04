@@ -17,7 +17,8 @@ CREATE TYPE member_status AS ENUM (
 CREATE TYPE message_type AS ENUM (
   'TEXT',
   'SYSTEM',
-  'IMAGE'
+  'IMAGE',
+  'FILE'
 );
 
 CREATE TABLE chat_rooms (

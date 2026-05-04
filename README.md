@@ -25,6 +25,9 @@ PostgreSQL runs at `localhost:55432`.
 make migrate
 ```
 
+`make migrate` applies unapplied `.sql` files in `migrations/` in filename order.
+For an existing database created before `FILE` message support, it will apply the enum upgrade without replaying the base schema.
+
 ### 4. Run chat-service
 
 ```bash
