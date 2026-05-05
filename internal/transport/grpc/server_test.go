@@ -9,22 +9,28 @@ import (
 	"github.com/ontheblock/chat-service/internal/pubsub"
 	"github.com/ontheblock/chat-service/internal/repository/memory"
 	"github.com/ontheblock/chat-service/internal/service"
+	"github.com/ontheblock/chat-service/internal/upload"
 	chatv1 "github.com/ontheblock/chat-service/proto/chat/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const bufSize = 1024 * 1024
 
 func startTestGRPCServer(t *testing.T) (chatv1.ChatServiceClient, func()) {
+	return startTestGRPCServerWithOptions(t)
+}
+
+func startTestGRPCServerWithOptions(t *testing.T, opts ...service.Option) (chatv1.ChatServiceClient, func()) {
 	t.Helper()
 	lis := bufconn.Listen(bufSize)
 	g := grpc.NewServer()
 
 	store := memory.NewStore()
-	svc := service.New(store, store, pubsub.NewMemoryRoomPubSub())
+	svc := service.New(store, store, pubsub.NewMemoryRoomPubSub(), opts...)
 	chatv1.RegisterChatServiceServer(g, NewServer(svc))
 
 	go func() {
@@ -48,8 +54,20 @@ func startTestGRPCServer(t *testing.T) (chatv1.ChatServiceClient, func()) {
 	return chatv1.NewChatServiceClient(conn), cleanup
 }
 
+type fakeUploadSigner struct {
+	out upload.AttachmentUpload
+	err error
+}
+
+func (f fakeUploadSigner) CreateAttachmentUploadURL(_ context.Context, _, _, _, _ string) (upload.AttachmentUpload, error) {
+	if f.err != nil {
+		return upload.AttachmentUpload{}, f.err
+	}
+	return f.out, nil
+}
+
 func TestGRPCRoomMessageFlow(t *testing.T) {
-	client, cleanup := startTestGRPCServer(t)
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
 	defer cleanup()
 	ctx := context.Background()
 
@@ -168,7 +186,7 @@ func TestGRPCListMyRoomsIncludesLastMessagePreview(t *testing.T) {
 }
 
 func TestGRPCSendImageMessagePersistsImageFields(t *testing.T) {
-	client, cleanup := startTestGRPCServer(t)
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
 	defer cleanup()
 	ctx := context.Background()
 
@@ -182,7 +200,7 @@ func TestGRPCSendImageMessagePersistsImageFields(t *testing.T) {
 		RoomId:       roomID,
 		SenderUserId: "owner",
 		MessageType:  chatv1.MessageType_MESSAGE_TYPE_IMAGE,
-		ImageUrl:     "https://storage.googleapis.com/bucket/image.png",
+		ImageUrl:     "https://storage.googleapis.com/bucket/chat-attachments/" + roomID + "/image.png",
 	})
 	if err != nil {
 		t.Fatalf("send image failed: %v", err)
@@ -190,7 +208,7 @@ func TestGRPCSendImageMessagePersistsImageFields(t *testing.T) {
 	if sendResp.GetMessage().GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
 		t.Fatalf("expected IMAGE message type, got %s", sendResp.GetMessage().GetMessageType())
 	}
-	if sendResp.GetMessage().GetImageUrl() != "https://storage.googleapis.com/bucket/image.png" {
+	if sendResp.GetMessage().GetImageUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/image.png" {
 		t.Fatalf("expected image_url to round-trip, got %q", sendResp.GetMessage().GetImageUrl())
 	}
 	if sendResp.GetMessage().GetContent() != "" {
@@ -207,13 +225,13 @@ func TestGRPCSendImageMessagePersistsImageFields(t *testing.T) {
 	if msgsResp.GetMessages()[0].GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
 		t.Fatalf("expected stored IMAGE message type, got %s", msgsResp.GetMessages()[0].GetMessageType())
 	}
-	if msgsResp.GetMessages()[0].GetImageUrl() != "https://storage.googleapis.com/bucket/image.png" {
+	if msgsResp.GetMessages()[0].GetImageUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/image.png" {
 		t.Fatalf("expected stored image_url, got %q", msgsResp.GetMessages()[0].GetImageUrl())
 	}
 }
 
 func TestGRPCListMyRoomsUsesImagePreviewPlaceholder(t *testing.T) {
-	client, cleanup := startTestGRPCServer(t)
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
 	defer cleanup()
 	ctx := context.Background()
 
@@ -227,7 +245,7 @@ func TestGRPCListMyRoomsUsesImagePreviewPlaceholder(t *testing.T) {
 		RoomId:       roomID,
 		SenderUserId: "owner",
 		MessageType:  chatv1.MessageType_MESSAGE_TYPE_IMAGE,
-		ImageUrl:     "https://storage.googleapis.com/bucket/image.png",
+		ImageUrl:     "https://storage.googleapis.com/bucket/chat-attachments/" + roomID + "/image.png",
 	}); err != nil {
 		t.Fatalf("send image failed: %v", err)
 	}
@@ -252,7 +270,7 @@ func TestGRPCListMyRoomsUsesImagePreviewPlaceholder(t *testing.T) {
 }
 
 func TestGRPCStreamDeliversImageMessageLive(t *testing.T) {
-	client, cleanup := startTestGRPCServer(t)
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
 	defer cleanup()
 	ctx := context.Background()
 
@@ -271,7 +289,7 @@ func TestGRPCStreamDeliversImageMessageLive(t *testing.T) {
 		RoomId:       roomID,
 		SenderUserId: "owner",
 		MessageType:  chatv1.MessageType_MESSAGE_TYPE_IMAGE,
-		ImageUrl:     "https://storage.googleapis.com/bucket/live-image.png",
+		ImageUrl:     "https://storage.googleapis.com/bucket/chat-attachments/" + roomID + "/live-image.png",
 	}); err != nil {
 		t.Fatalf("send image failed: %v", err)
 	}
@@ -295,7 +313,7 @@ func TestGRPCStreamDeliversImageMessageLive(t *testing.T) {
 		if msg.GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
 			t.Fatalf("expected IMAGE stream message, got %s", msg.GetMessageType())
 		}
-		if msg.GetImageUrl() != "https://storage.googleapis.com/bucket/live-image.png" {
+		if msg.GetImageUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/live-image.png" {
 			t.Fatalf("expected live image_url, got %q", msg.GetImageUrl())
 		}
 	case err := <-errCh:
@@ -303,6 +321,279 @@ func TestGRPCStreamDeliversImageMessageLive(t *testing.T) {
 	case <-recvCtx.Done():
 		t.Fatal("timed out waiting for live image message")
 	}
+}
+
+func TestGRPCCreateImageUploadURL(t *testing.T) {
+	expected := upload.AttachmentUpload{
+		ObjectName: "chat-images/owner/20260503/image-1.png",
+		UploadURL:  "https://signed-upload",
+		FileURL:    "https://storage.googleapis.com/bucket/chat-images/owner/20260503/image-1.png",
+		ExpiresAt:  time.Now().UTC().Add(15 * time.Minute),
+	}
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithAttachmentUploadSigner(fakeUploadSigner{out: expected}))
+	defer cleanup()
+
+	createResp, err := client.CreateRoom(context.Background(), &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+
+	resp, err := client.CreateImageUploadURL(context.Background(), &chatv1.CreateImageUploadURLRequest{
+		UserId:      "owner",
+		RoomId:      createResp.GetRoom().GetRoomId(),
+		FileName:    "image.png",
+		ContentType: "image/png",
+	})
+	if err != nil {
+		t.Fatalf("create image upload url failed: %v", err)
+	}
+	if resp.GetObjectName() != expected.ObjectName || resp.GetUploadUrl() != expected.UploadURL || resp.GetImageUrl() != expected.FileURL {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestGRPCCreateImageUploadURLRejectsInvalidContentType(t *testing.T) {
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithAttachmentUploadSigner(fakeUploadSigner{}))
+	defer cleanup()
+
+	createResp, err := client.CreateRoom(context.Background(), &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+
+	_, err = client.CreateImageUploadURL(context.Background(), &chatv1.CreateImageUploadURLRequest{
+		UserId:      "owner",
+		RoomId:      createResp.GetRoom().GetRoomId(),
+		FileName:    "file.pdf",
+		ContentType: "application/pdf",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid content type to fail")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %v", err)
+	}
+	if st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %s", st.Code())
+	}
+}
+
+func TestGRPCCreateAttachmentUploadURL(t *testing.T) {
+	expected := upload.AttachmentUpload{
+		ObjectName: "chat-attachments/owner/20260503/file-1.pdf",
+		UploadURL:  "https://signed-upload",
+		FileURL:    "https://storage.googleapis.com/bucket/chat-attachments/owner/20260503/file-1.pdf",
+		ExpiresAt:  time.Now().UTC().Add(15 * time.Minute),
+	}
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithAttachmentUploadSigner(fakeUploadSigner{out: expected}))
+	defer cleanup()
+
+	createResp, err := client.CreateRoom(context.Background(), &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+
+	resp, err := client.CreateAttachmentUploadURL(context.Background(), &chatv1.CreateAttachmentUploadURLRequest{
+		UserId:      "owner",
+		RoomId:      createResp.GetRoom().GetRoomId(),
+		FileName:    "file.pdf",
+		ContentType: "application/pdf",
+	})
+	if err != nil {
+		t.Fatalf("create attachment upload url failed: %v", err)
+	}
+	if resp.GetObjectName() != expected.ObjectName || resp.GetUploadUrl() != expected.UploadURL || resp.GetFileUrl() != expected.FileURL {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestGRPCSendFileMessagePersistsFileFields(t *testing.T) {
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
+	defer cleanup()
+	ctx := context.Background()
+
+	createResp, err := client.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+	roomID := createResp.GetRoom().GetRoomId()
+
+	sendResp, err := client.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:       roomID,
+		SenderUserId: "owner",
+		MessageType:  chatv1.MessageType_MESSAGE_TYPE_FILE,
+		FileUrl:      "https://storage.googleapis.com/bucket/chat-attachments/" + roomID + "/file.pdf",
+		Metadata: mustStruct(t, map[string]any{
+			"file_url":     "https://storage.googleapis.com/bucket/chat-attachments/" + roomID + "/file.pdf",
+			"file_name":    "file.pdf",
+			"content_type": "application/pdf",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("send file failed: %v", err)
+	}
+	if sendResp.GetMessage().GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_FILE {
+		t.Fatalf("expected FILE message type, got %s", sendResp.GetMessage().GetMessageType())
+	}
+	if sendResp.GetMessage().GetFileUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/file.pdf" {
+		t.Fatalf("expected file_url to round-trip, got %q", sendResp.GetMessage().GetFileUrl())
+	}
+
+	msgsResp, err := client.GetMessages(ctx, &chatv1.GetMessagesRequest{RoomId: roomID, UserId: "owner", Limit: 20})
+	if err != nil {
+		t.Fatalf("get messages failed: %v", err)
+	}
+	if len(msgsResp.GetMessages()) != 1 {
+		t.Fatalf("expected one file message")
+	}
+	if msgsResp.GetMessages()[0].GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_FILE {
+		t.Fatalf("expected stored FILE message type, got %s", msgsResp.GetMessages()[0].GetMessageType())
+	}
+	if msgsResp.GetMessages()[0].GetFileUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/file.pdf" {
+		t.Fatalf("expected stored file_url, got %q", msgsResp.GetMessages()[0].GetFileUrl())
+	}
+}
+
+func TestGRPCListMyRoomsUsesFilePreviewPlaceholder(t *testing.T) {
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
+	defer cleanup()
+	ctx := context.Background()
+
+	createResp, err := client.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+	roomID := createResp.GetRoom().GetRoomId()
+
+	if _, err := client.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:       roomID,
+		SenderUserId: "owner",
+		MessageType:  chatv1.MessageType_MESSAGE_TYPE_FILE,
+		FileUrl:      "https://storage.googleapis.com/bucket/chat-attachments/" + roomID + "/spec.pdf",
+		Metadata: mustStruct(t, map[string]any{
+			"file_url":     "https://storage.googleapis.com/bucket/chat-attachments/" + roomID + "/spec.pdf",
+			"file_name":    "spec.pdf",
+			"content_type": "application/pdf",
+		}),
+	}); err != nil {
+		t.Fatalf("send file failed: %v", err)
+	}
+
+	listResp, err := client.ListMyRooms(ctx, &chatv1.ListMyRoomsRequest{UserId: "owner"})
+	if err != nil {
+		t.Fatalf("list rooms failed: %v", err)
+	}
+	if len(listResp.GetRooms()) != 1 {
+		t.Fatalf("expected one room, got %d", len(listResp.GetRooms()))
+	}
+	last := listResp.GetRooms()[0].GetLastMessage()
+	if last == nil {
+		t.Fatalf("expected last_message preview")
+	}
+	if last.GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_FILE {
+		t.Fatalf("expected file preview type, got %s", last.GetMessageType())
+	}
+	if last.GetContentPreview() != "[File] spec.pdf" {
+		t.Fatalf("expected file placeholder preview, got %q", last.GetContentPreview())
+	}
+}
+
+func TestGRPCSendMessageRejectsInvalidFilePayload(t *testing.T) {
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
+	defer cleanup()
+	ctx := context.Background()
+
+	createResp, err := client.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+
+	_, err = client.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:       createResp.GetRoom().GetRoomId(),
+		SenderUserId: "owner",
+		MessageType:  chatv1.MessageType_MESSAGE_TYPE_FILE,
+		FileUrl:      "https://storage.googleapis.com/bucket/file.pdf",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid file payload to fail")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %v", err)
+	}
+	if st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %s", st.Code())
+	}
+}
+
+func TestGRPCCreateAttachmentUploadURLRejectsNonMember(t *testing.T) {
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithAttachmentUploadSigner(fakeUploadSigner{}))
+	defer cleanup()
+
+	createResp, err := client.CreateRoom(context.Background(), &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+
+	_, err = client.CreateAttachmentUploadURL(context.Background(), &chatv1.CreateAttachmentUploadURLRequest{
+		UserId:      "stranger",
+		RoomId:      createResp.GetRoom().GetRoomId(),
+		FileName:    "file.pdf",
+		ContentType: "application/pdf",
+	})
+	if err == nil {
+		t.Fatalf("expected non-member upload URL request to fail")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %v", err)
+	}
+	if st.Code() != codes.NotFound {
+		t.Fatalf("expected NOT_FOUND, got %s", st.Code())
+	}
+}
+
+func TestGRPCSendMessageRejectsExternalFileURL(t *testing.T) {
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
+	defer cleanup()
+	ctx := context.Background()
+
+	createResp, err := client.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "owner", Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+
+	_, err = client.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:       createResp.GetRoom().GetRoomId(),
+		SenderUserId: "owner",
+		MessageType:  chatv1.MessageType_MESSAGE_TYPE_FILE,
+		FileUrl:      "https://evil.example/file.pdf",
+		Metadata: mustStruct(t, map[string]any{
+			"file_url":     "https://evil.example/file.pdf",
+			"file_name":    "file.pdf",
+			"content_type": "application/pdf",
+		}),
+	})
+	if err == nil {
+		t.Fatalf("expected external file URL to fail")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %v", err)
+	}
+	if st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PERMISSION_DENIED, got %s", st.Code())
+	}
+}
+
+func mustStruct(t *testing.T, values map[string]any) *structpb.Struct {
+	t.Helper()
+	s, err := structpb.NewStruct(values)
+	if err != nil {
+		t.Fatalf("new struct failed: %v", err)
+	}
+	return s
 }
 
 func TestGRPCSendMessageRejectsInvalidImagePayload(t *testing.T) {

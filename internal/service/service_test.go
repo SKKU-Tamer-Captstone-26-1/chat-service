@@ -10,12 +10,25 @@ import (
 	"github.com/ontheblock/chat-service/internal/domain"
 	"github.com/ontheblock/chat-service/internal/pubsub"
 	"github.com/ontheblock/chat-service/internal/repository/memory"
+	"github.com/ontheblock/chat-service/internal/upload"
 )
 
 func newTestService() (*ChatService, *memory.Store) {
 	store := memory.NewStore()
 	svc := New(store, store, pubsub.NewMemoryRoomPubSub())
 	return svc, store
+}
+
+type fakeImageUploadSigner struct {
+	out upload.AttachmentUpload
+	err error
+}
+
+func (f fakeImageUploadSigner) CreateAttachmentUploadURL(_ context.Context, _, _, _, _ string) (upload.AttachmentUpload, error) {
+	if f.err != nil {
+		return upload.AttachmentUpload{}, f.err
+	}
+	return f.out, nil
 }
 
 func TestBoardLinkedRoomUniqueness(t *testing.T) {
@@ -271,20 +284,153 @@ func TestSendMessageRejectsImageWithoutURL(t *testing.T) {
 func TestSendMessageAllowsImageWithURL(t *testing.T) {
 	svc, _ := newTestService()
 	ctx := context.Background()
+	svc.trustedAttachmentBucket = "bucket"
 
 	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg, err := svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeImage, "", "https://example.com/x.png", map[string]any{"width": 100})
+	msg, err := svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeImage, "", "https://storage.googleapis.com/bucket/chat-attachments/"+room.ID+"/x.png", map[string]any{"width": 100})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if msg.MessageType != domain.MessageTypeImage {
 		t.Fatalf("expected IMAGE, got %s", msg.MessageType)
 	}
-	if msg.ImageURL != "https://example.com/x.png" {
+	if msg.ImageURL != "https://storage.googleapis.com/bucket/chat-attachments/"+room.ID+"/x.png" {
 		t.Fatalf("expected image_url to be stored, got %q", msg.ImageURL)
+	}
+}
+
+func TestSendMessageRejectsFileWithoutMetadata(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeFile, "", "", nil)
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestSendMessageAllowsFileWithMetadata(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+	svc.trustedAttachmentBucket = "bucket"
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeFile, "", "", map[string]any{
+		"file_url":     "https://storage.googleapis.com/bucket/chat-attachments/" + room.ID + "/file.pdf",
+		"file_name":    "file.pdf",
+		"content_type": "application/pdf",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.MessageType != domain.MessageTypeFile {
+		t.Fatalf("expected FILE, got %s", msg.MessageType)
+	}
+	if msg.FileURL != "https://storage.googleapis.com/bucket/chat-attachments/"+room.ID+"/file.pdf" {
+		t.Fatalf("expected file_url to be stored, got %q", msg.FileURL)
+	}
+}
+
+func TestCreateImageUploadURLRejectsInvalidContentType(t *testing.T) {
+	svc, _ := newTestService()
+	svc.attachmentUploadSigner = fakeImageUploadSigner{}
+	room, err := svc.CreateRoom(context.Background(), CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.CreateImageUploadURL(context.Background(), room.ID, "owner", "file.pdf", "application/pdf")
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestCreateImageUploadURLReturnsSignedUploadData(t *testing.T) {
+	svc, _ := newTestService()
+	expected := upload.AttachmentUpload{
+		ObjectName: "chat-attachments/room-1/image-1.png",
+		UploadURL:  "https://signed-upload",
+		FileURL:    "https://storage.googleapis.com/bucket/chat-attachments/room-1/image-1.png",
+		ExpiresAt:  time.Now().UTC().Add(15 * time.Minute),
+	}
+	svc.attachmentUploadSigner = fakeImageUploadSigner{out: expected}
+
+	room, err := svc.CreateRoom(context.Background(), CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.CreateImageUploadURL(context.Background(), room.ID, "owner", "image.png", "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ObjectName != expected.ObjectName || got.UploadURL != expected.UploadURL || got.ImageURL != expected.FileURL {
+		t.Fatalf("unexpected signed upload response: %+v", got)
+	}
+}
+
+func TestCreateAttachmentUploadURLAllowsPDF(t *testing.T) {
+	svc, _ := newTestService()
+	expected := upload.AttachmentUpload{
+		ObjectName: "chat-attachments/room-1/file-1.pdf",
+		UploadURL:  "https://signed-upload",
+		FileURL:    "https://storage.googleapis.com/bucket/chat-attachments/room-1/file-1.pdf",
+		ExpiresAt:  time.Now().UTC().Add(15 * time.Minute),
+	}
+	svc.attachmentUploadSigner = fakeImageUploadSigner{out: expected}
+
+	room, err := svc.CreateRoom(context.Background(), CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.CreateAttachmentUploadURL(context.Background(), room.ID, "owner", "file.pdf", "application/pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ObjectName != expected.ObjectName || got.UploadURL != expected.UploadURL || got.FileURL != expected.FileURL {
+		t.Fatalf("unexpected signed upload response: %+v", got)
+	}
+}
+
+func TestCreateAttachmentUploadURLRequiresActiveMembership(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+	svc.attachmentUploadSigner = fakeImageUploadSigner{}
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateAttachmentUploadURL(ctx, room.ID, "stranger", "file.pdf", "application/pdf"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for non-member, got %v", err)
+	}
+}
+
+func TestSendMessageRejectsExternalAttachmentURL(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+	svc.trustedAttachmentBucket = "bucket"
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeFile, "", "", map[string]any{
+		"file_url":     "https://evil.example/file.pdf",
+		"file_name":    "file.pdf",
+		"content_type": "application/pdf",
+	})
+	if !errors.Is(err, domain.ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied, got %v", err)
 	}
 }
 

@@ -255,6 +255,7 @@ WHERE mem.user_id = $1 AND mem.status = 'ACTIVE'
 			if len(msgMeta) > 0 {
 				_ = json.Unmarshal(msgMeta, &lastMessage.Metadata)
 			}
+			lastMessage.FileURL = extractMetadataString(lastMessage.Metadata, "file_url")
 			if msgDeletedAt.Valid {
 				t := msgDeletedAt.Time
 				lastMessage.DeletedAt = &t
@@ -441,6 +442,7 @@ WHERE room_id = $1 AND id = $2
 	if len(meta) > 0 {
 		_ = json.Unmarshal(meta, &m.Metadata)
 	}
+	m.FileURL = extractMetadataString(m.Metadata, "file_url")
 	if deletedAt.Valid {
 		t := deletedAt.Time
 		m.DeletedAt = &t
@@ -507,6 +509,7 @@ LIMIT $2
 		if len(meta) > 0 {
 			_ = json.Unmarshal(meta, &m.Metadata)
 		}
+		m.FileURL = extractMetadataString(m.Metadata, "file_url")
 		if deletedAt.Valid {
 			t := deletedAt.Time
 			m.DeletedAt = &t
@@ -555,6 +558,7 @@ LIMIT $3
 		if len(meta) > 0 {
 			_ = json.Unmarshal(meta, &m.Metadata)
 		}
+		m.FileURL = extractMetadataString(m.Metadata, "file_url")
 		if deletedAt.Valid {
 			t := deletedAt.Time
 			m.DeletedAt = &t
@@ -595,4 +599,19 @@ func decodeRoomToken(token string) (*time.Time, string) {
 	}
 	t := time.Unix(0, ns).UTC()
 	return &t, parts[1]
+}
+
+func extractMetadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	v, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
 }

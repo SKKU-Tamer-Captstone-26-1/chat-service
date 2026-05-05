@@ -30,6 +30,7 @@ const (
 	MessageTypeText   MessageType = "TEXT"
 	MessageTypeSystem MessageType = "SYSTEM"
 	MessageTypeImage  MessageType = "IMAGE"
+	MessageTypeFile   MessageType = "FILE"
 )
 
 type ChatRoom struct {
@@ -68,6 +69,7 @@ type ChatMessage struct {
 	SequenceNo      int64
 	Content         string
 	ImageURL        string
+	FileURL         string
 	Metadata        map[string]any
 	IsDeleted       bool
 	DeletedAt       *time.Time

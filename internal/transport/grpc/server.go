@@ -100,6 +100,12 @@ func (s *Server) ListMyRooms(ctx context.Context, req *chatv1.ListMyRoomsRequest
 				contentPreview = ""
 			} else if r.LastMessage.MessageType == domain.MessageTypeImage {
 				contentPreview = "[Image]"
+			} else if r.LastMessage.MessageType == domain.MessageTypeFile {
+				if fileName := extractMessageMetadataString(r.LastMessage.Metadata, "file_name"); fileName != "" {
+					contentPreview = "[File] " + fileName
+				} else {
+					contentPreview = "[File]"
+				}
 			}
 			lastMessage = &chatv1.LastMessagePreview{
 				MessageId:      r.LastMessage.ID,
@@ -147,11 +153,46 @@ func (s *Server) SendMessage(ctx context.Context, req *chatv1.SendMessageRequest
 	if req.GetMetadata() != nil {
 		metadata = req.GetMetadata().AsMap()
 	}
+	if req.GetFileUrl() != "" {
+		metadata["file_url"] = req.GetFileUrl()
+	}
 	msg, err := s.svc.SendMessage(ctx, req.GetRoomId(), req.GetSenderUserId(), fromPBMessageType(req.GetMessageType()), req.GetContent(), req.GetImageUrl(), metadata)
 	if err != nil {
 		return nil, mapError(err)
 	}
 	return &chatv1.SendMessageResponse{Message: toPBMessage(msg)}, nil
+}
+
+func (s *Server) CreateAttachmentUploadURL(ctx context.Context, req *chatv1.CreateAttachmentUploadURLRequest) (*chatv1.CreateAttachmentUploadURLResponse, error) {
+	if req.GetUserId() == "" || req.GetRoomId() == "" || req.GetFileName() == "" || req.GetContentType() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id, room_id, file_name, content_type are required")
+	}
+	out, err := s.svc.CreateAttachmentUploadURL(ctx, req.GetRoomId(), req.GetUserId(), req.GetFileName(), req.GetContentType())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &chatv1.CreateAttachmentUploadURLResponse{
+		ObjectName: out.ObjectName,
+		UploadUrl:  out.UploadURL,
+		FileUrl:    out.FileURL,
+		ExpiresAt:  timestamppb.New(out.ExpiresAt),
+	}, nil
+}
+
+func (s *Server) CreateImageUploadURL(ctx context.Context, req *chatv1.CreateImageUploadURLRequest) (*chatv1.CreateImageUploadURLResponse, error) {
+	if req.GetUserId() == "" || req.GetRoomId() == "" || req.GetFileName() == "" || req.GetContentType() == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id, room_id, file_name, content_type are required")
+	}
+	out, err := s.svc.CreateImageUploadURL(ctx, req.GetRoomId(), req.GetUserId(), req.GetFileName(), req.GetContentType())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &chatv1.CreateImageUploadURLResponse{
+		ObjectName: out.ObjectName,
+		UploadUrl:  out.UploadURL,
+		ImageUrl:   out.ImageURL,
+		ExpiresAt:  timestamppb.New(out.ExpiresAt),
+	}, nil
 }
 
 func (s *Server) MarkAsRead(ctx context.Context, req *chatv1.MarkAsReadRequest) (*chatv1.MarkAsReadResponse, error) {
@@ -251,6 +292,8 @@ func mapError(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, domain.ErrInvalidArgument):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, domain.ErrNotConfigured):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, domain.ErrRoomInactive):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, domain.ErrPermissionDenied):
@@ -314,6 +357,7 @@ func toPBMessage(m domain.ChatMessage) *chatv1.ChatMessage {
 		SequenceNo:      m.SequenceNo,
 		Content:         m.Content,
 		ImageUrl:        m.ImageURL,
+		FileUrl:         m.FileURL,
 		IsDeleted:       m.IsDeleted,
 		DeletedByUserId: m.DeletedByUserID,
 		SentAt:          timestamppb.New(m.CreatedAt),
@@ -374,6 +418,8 @@ func toPBMessageType(t domain.MessageType) chatv1.MessageType {
 		return chatv1.MessageType_MESSAGE_TYPE_SYSTEM
 	case domain.MessageTypeImage:
 		return chatv1.MessageType_MESSAGE_TYPE_IMAGE
+	case domain.MessageTypeFile:
+		return chatv1.MessageType_MESSAGE_TYPE_FILE
 	default:
 		return chatv1.MessageType_MESSAGE_TYPE_UNSPECIFIED
 	}
@@ -387,7 +433,24 @@ func fromPBMessageType(t chatv1.MessageType) domain.MessageType {
 		return domain.MessageTypeSystem
 	case chatv1.MessageType_MESSAGE_TYPE_IMAGE:
 		return domain.MessageTypeImage
+	case chatv1.MessageType_MESSAGE_TYPE_FILE:
+		return domain.MessageTypeFile
 	default:
 		return domain.MessageTypeText
 	}
+}
+
+func extractMessageMetadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	v, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }

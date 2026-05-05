@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/ontheblock/chat-service/internal/id"
 	"github.com/ontheblock/chat-service/internal/pubsub"
 	"github.com/ontheblock/chat-service/internal/repository"
+	"github.com/ontheblock/chat-service/internal/upload"
 )
 
 var (
@@ -21,14 +25,57 @@ var (
 const streamCatchUpBatchSize = 100
 
 type ChatService struct {
-	tx     repository.TxRunner
-	repo   repository.ChatRepository
-	pubsub pubsub.RoomPubSub
-	now    func() time.Time
+	tx                      repository.TxRunner
+	repo                    repository.ChatRepository
+	pubsub                  pubsub.RoomPubSub
+	attachmentUploadSigner  upload.AttachmentUploadSigner
+	trustedAttachmentBucket string
+	now                     func() time.Time
 }
 
-func New(tx repository.TxRunner, repo repository.ChatRepository, ps pubsub.RoomPubSub) *ChatService {
-	return &ChatService{tx: tx, repo: repo, pubsub: ps, now: time.Now}
+type Option func(*ChatService)
+
+func WithAttachmentUploadSigner(signer upload.AttachmentUploadSigner) Option {
+	return func(s *ChatService) {
+		s.attachmentUploadSigner = signer
+	}
+}
+
+func WithTrustedAttachmentBucket(bucket string) Option {
+	return func(s *ChatService) {
+		s.trustedAttachmentBucket = strings.TrimSpace(bucket)
+	}
+}
+
+func WithImageUploadSigner(signer upload.ImageUploadSigner) Option {
+	return func(s *ChatService) {
+		s.attachmentUploadSigner = imageSignerAdapter{signer: signer}
+	}
+}
+
+type imageSignerAdapter struct {
+	signer upload.ImageUploadSigner
+}
+
+func (a imageSignerAdapter) CreateAttachmentUploadURL(ctx context.Context, roomID, userID, fileName, contentType string) (upload.AttachmentUpload, error) {
+	out, err := a.signer.CreateImageUploadURL(ctx, roomID, userID, fileName, contentType)
+	if err != nil {
+		return upload.AttachmentUpload{}, err
+	}
+	return upload.AttachmentUpload{
+		ObjectName: out.ObjectName,
+		UploadURL:  out.UploadURL,
+		FileURL:    out.ImageURL,
+		ExpiresAt:  out.ExpiresAt,
+	}, nil
+}
+
+func New(tx repository.TxRunner, repo repository.ChatRepository, ps pubsub.RoomPubSub, opts ...Option) *ChatService {
+	svc := &ChatService{tx: tx, repo: repo, pubsub: ps, now: time.Now}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 type CreateRoomInput struct {
@@ -119,6 +166,35 @@ func (s *ChatService) CreateBoardLinkedRoom(ctx context.Context, in CreateBoardL
 		return domain.ChatRoom{}, false, err
 	}
 	return room, false, nil
+}
+
+func (s *ChatService) CreateAttachmentUploadURL(ctx context.Context, roomID, userID, fileName, contentType string) (upload.AttachmentUpload, error) {
+	if s.attachmentUploadSigner == nil {
+		return upload.AttachmentUpload{}, domain.ErrNotConfigured
+	}
+	if _, _, err := s.validateActiveMembership(ctx, roomID, userID); err != nil {
+		return upload.AttachmentUpload{}, err
+	}
+	if err := validateAttachmentUploadRequest(userID, fileName, contentType); err != nil {
+		return upload.AttachmentUpload{}, err
+	}
+	return s.attachmentUploadSigner.CreateAttachmentUploadURL(ctx, roomID, userID, fileName, contentType)
+}
+
+func (s *ChatService) CreateImageUploadURL(ctx context.Context, roomID, userID, fileName, contentType string) (upload.ImageUpload, error) {
+	if !isAllowedImageContentType(contentType) || !isAllowedImageExtension(fileName) {
+		return upload.ImageUpload{}, domain.ErrInvalidArgument
+	}
+	out, err := s.CreateAttachmentUploadURL(ctx, roomID, userID, fileName, contentType)
+	if err != nil {
+		return upload.ImageUpload{}, err
+	}
+	return upload.ImageUpload{
+		ObjectName: out.ObjectName,
+		UploadURL:  out.UploadURL,
+		ImageURL:   out.FileURL,
+		ExpiresAt:  out.ExpiresAt,
+	}, nil
 }
 
 func (s *ChatService) JoinRoom(ctx context.Context, roomID, userID string) (domain.ChatRoomMember, error) {
@@ -308,7 +384,10 @@ func (s *ChatService) SendMessage(ctx context.Context, roomID, senderUserID stri
 	if !room.IsActive || member.Status != domain.MemberStatusActive {
 		return domain.ChatMessage{}, domain.ErrInvalidState
 	}
-	if err := validateMessagePayload(messageType, content, imageURL); err != nil {
+	if err := validateMessagePayload(messageType, content, imageURL, metadata); err != nil {
+		return domain.ChatMessage{}, err
+	}
+	if err := s.validateTrustedAttachmentURL(roomID, messageType, imageURL, metadata); err != nil {
 		return domain.ChatMessage{}, err
 	}
 	now := s.now().UTC()
@@ -319,6 +398,7 @@ func (s *ChatService) SendMessage(ctx context.Context, roomID, senderUserID stri
 		MessageType:  messageType,
 		Content:      content,
 		ImageURL:     imageURL,
+		FileURL:      extractStringMetadata(metadata, "file_url"),
 		Metadata:     metadata,
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -360,6 +440,7 @@ func (s *ChatService) DeleteMessage(ctx context.Context, roomID, messageID, owne
 		msg.DeletedByUserID = ownerUserID
 		msg.Content = ""
 		msg.ImageURL = ""
+		msg.FileURL = ""
 		msg.Metadata = nil
 		msg.UpdatedAt = now
 		if err := repo.UpdateMessage(ctx, msg); err != nil {
@@ -399,6 +480,7 @@ func (s *ChatService) GetMessages(ctx context.Context, roomID, userID string, be
 		if msgs[i].IsDeleted {
 			msgs[i].Content = ""
 			msgs[i].ImageURL = ""
+			msgs[i].FileURL = ""
 			msgs[i].Metadata = nil
 		}
 	}
@@ -536,9 +618,12 @@ func (s *ChatService) validateActiveMembership(ctx context.Context, roomID, user
 	return room, member, nil
 }
 
-func validateMessagePayload(messageType domain.MessageType, content, imageURL string) error {
+func validateMessagePayload(messageType domain.MessageType, content, imageURL string, metadata map[string]any) error {
 	trimmedContent := strings.TrimSpace(content)
 	trimmedImageURL := strings.TrimSpace(imageURL)
+	fileURL := extractStringMetadata(metadata, "file_url")
+	fileName := extractStringMetadata(metadata, "file_name")
+	contentType := extractStringMetadata(metadata, "content_type")
 
 	switch messageType {
 	case domain.MessageTypeText:
@@ -552,6 +637,22 @@ func validateMessagePayload(messageType domain.MessageType, content, imageURL st
 		if trimmedImageURL == "" {
 			return domain.ErrInvalidArgument
 		}
+		if trimmedContent != "" {
+			return domain.ErrInvalidArgument
+		}
+		if fileURL != "" {
+			return domain.ErrInvalidArgument
+		}
+	case domain.MessageTypeFile:
+		if trimmedImageURL != "" {
+			return domain.ErrInvalidArgument
+		}
+		if trimmedContent != "" {
+			return domain.ErrInvalidArgument
+		}
+		if fileURL == "" || fileName == "" || contentType == "" {
+			return domain.ErrInvalidArgument
+		}
 	case domain.MessageTypeSystem:
 		if trimmedContent == "" {
 			return domain.ErrInvalidArgument
@@ -560,6 +661,114 @@ func validateMessagePayload(messageType domain.MessageType, content, imageURL st
 		return domain.ErrInvalidArgument
 	}
 
+	return nil
+}
+
+func (s *ChatService) validateTrustedAttachmentURL(roomID string, messageType domain.MessageType, imageURL string, metadata map[string]any) error {
+	switch messageType {
+	case domain.MessageTypeImage:
+		if s.trustedAttachmentBucket == "" {
+			return domain.ErrNotConfigured
+		}
+		return validateTrustedStorageURL(imageURL, s.trustedAttachmentBucket, roomID)
+	case domain.MessageTypeFile:
+		if s.trustedAttachmentBucket == "" {
+			return domain.ErrNotConfigured
+		}
+		return validateTrustedStorageURL(extractStringMetadata(metadata, "file_url"), s.trustedAttachmentBucket, roomID)
+	default:
+		return nil
+	}
+}
+
+func validateAttachmentUploadRequest(userID, fileName, contentType string) error {
+	if strings.TrimSpace(userID) == "" || strings.TrimSpace(fileName) == "" || strings.TrimSpace(contentType) == "" {
+		return domain.ErrInvalidArgument
+	}
+	if !isAllowedAttachmentContentType(contentType) {
+		return domain.ErrInvalidArgument
+	}
+	if !isAllowedAttachmentExtension(fileName) {
+		return domain.ErrInvalidArgument
+	}
+	return nil
+}
+
+func isAllowedAttachmentContentType(contentType string) bool {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/png", "image/jpeg", "image/webp",
+		"application/pdf",
+		"application/msword",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.ms-excel",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.ms-powerpoint",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"text/plain":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedImageContentType(contentType string) bool {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/jpeg", "image/png", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedAttachmentExtension(fileName string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(fileName))) {
+	case ".png", ".jpg", ".jpeg", ".webp",
+		".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedImageExtension(fileName string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(fileName))) {
+	case ".png", ".jpg", ".jpeg", ".webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractStringMetadata(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	v, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func validateTrustedStorageURL(rawURL, bucket, roomID string) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return domain.ErrInvalidArgument
+	}
+	if parsed.Scheme != "https" {
+		return domain.ErrPermissionDenied
+	}
+	if !strings.EqualFold(parsed.Host, "storage.googleapis.com") {
+		return domain.ErrPermissionDenied
+	}
+	expectedPrefix := fmt.Sprintf("/%s/chat-attachments/%s/", strings.TrimSpace(bucket), strings.TrimSpace(roomID))
+	if !strings.HasPrefix(parsed.EscapedPath(), expectedPrefix) && !strings.HasPrefix(parsed.Path, expectedPrefix) {
+		return domain.ErrPermissionDenied
+	}
 	return nil
 }
 
