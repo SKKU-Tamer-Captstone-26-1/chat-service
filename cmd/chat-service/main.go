@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	postgresrepo "github.com/ontheblock/chat-service/internal/repository/postgres"
 	"github.com/ontheblock/chat-service/internal/service"
 	transportgrpc "github.com/ontheblock/chat-service/internal/transport/grpc"
+	gcsupload "github.com/ontheblock/chat-service/internal/upload/gcs"
 	chatv1 "github.com/ontheblock/chat-service/proto/chat/v1"
 	"google.golang.org/grpc"
 )
@@ -39,7 +41,20 @@ func main() {
 	defer cleanup()
 
 	ps := pubsub.NewMemoryRoomPubSub()
-	svc := service.New(store, store, ps)
+	opts := []service.Option{}
+	if signer, ok, err := initAttachmentUploadSigner(); err != nil {
+		log.Fatalf("attachment upload signer init failed: %v", err)
+	} else if ok {
+		defer func() {
+			if err := signer.Close(); err != nil {
+				log.Printf("attachment upload signer close failed: %v", err)
+			}
+		}()
+		opts = append(opts, service.WithAttachmentUploadSigner(signer))
+		opts = append(opts, service.WithTrustedAttachmentBucket(strings.TrimSpace(os.Getenv("GCP_STORAGE_BUCKET"))))
+		log.Printf("attachment upload signer enabled for bucket %s", os.Getenv("GCP_STORAGE_BUCKET"))
+	}
+	svc := service.New(store, store, ps, opts...)
 	handler := transportgrpc.NewServer(svc)
 
 	grpcServer := grpc.NewServer()
@@ -108,4 +123,17 @@ func initRepository(ctx context.Context) (runtimeRepository, func(), string, err
 type runtimeRepository interface {
 	repository.TxRunner
 	repository.ChatRepository
+}
+
+func initAttachmentUploadSigner() (*gcsupload.Signer, bool, error) {
+	bucket := strings.TrimSpace(os.Getenv("GCP_STORAGE_BUCKET"))
+	googleAccessID := strings.TrimSpace(os.Getenv("GCP_SIGNING_SERVICE_ACCOUNT_EMAIL"))
+	if bucket == "" {
+		return nil, false, nil
+	}
+	signer, err := gcsupload.NewSigner(context.Background(), bucket, googleAccessID)
+	if err != nil {
+		return nil, false, err
+	}
+	return signer, true, nil
 }

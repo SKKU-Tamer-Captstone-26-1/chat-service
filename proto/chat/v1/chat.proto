@@ -14,7 +14,7 @@ import "google/protobuf/timestamp.proto";
 // Scope:
 // - general group rooms
 // - board-linked group rooms
-// - text, image, and system messages
+// - text, image, file, and system messages
 // - room-level read/unread tracking
 // - owner moderation
 //
@@ -47,6 +47,14 @@ service ChatService {
 
   // Sends a message to a room.
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+
+  // Creates a signed upload URL for an attachment object.
+  // The client uploads binary data directly to object storage, then sends
+  // the resulting URL through SendMessage.
+  rpc CreateAttachmentUploadURL(CreateAttachmentUploadURLRequest) returns (CreateAttachmentUploadURLResponse);
+
+  // Deprecated compatibility wrapper for image-only upload URL requests.
+  rpc CreateImageUploadURL(CreateImageUploadURLRequest) returns (CreateImageUploadURLResponse);
 
   // Marks a room as read up to a specific sequence number.
   rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
@@ -233,11 +241,44 @@ message SendMessageRequest {
   MessageType message_type = 3;
   string content = 4;
   string image_url = 5;
+  string file_url = 7;
   google.protobuf.Struct metadata = 6;
 }
 
 message SendMessageResponse {
   ChatMessage message = 1;
+}
+
+message CreateAttachmentUploadURLRequest {
+  // Temporary v1 field.
+  // Real production identity should come from auth metadata/JWT.
+  string user_id = 1;
+  string file_name = 2;
+  string content_type = 3;
+  string room_id = 4;
+}
+
+message CreateAttachmentUploadURLResponse {
+  string object_name = 1;
+  string upload_url = 2;
+  string file_url = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message CreateImageUploadURLRequest {
+  // Temporary v1 field.
+  // Real production identity should come from auth metadata/JWT.
+  string user_id = 1;
+  string file_name = 2;
+  string content_type = 3;
+  string room_id = 4;
+}
+
+message CreateImageUploadURLResponse {
+  string object_name = 1;
+  string upload_url = 2;
+  string image_url = 3;
+  google.protobuf.Timestamp expires_at = 4;
 }
 
 message DeleteMessageRequest {
@@ -258,6 +299,7 @@ message ChatMessage {
   int64 sequence_no = 5;
   string content = 6;
   string image_url = 7;
+  string file_url = 14;
   google.protobuf.Struct metadata = 8;
   bool is_deleted = 9;
   string deleted_by_user_id = 10;
@@ -271,6 +313,7 @@ enum MessageType {
   MESSAGE_TYPE_TEXT = 1;
   MESSAGE_TYPE_SYSTEM = 2;
   MESSAGE_TYPE_IMAGE = 3;
+  MESSAGE_TYPE_FILE = 4;
 }
 
 // =============================================================================
