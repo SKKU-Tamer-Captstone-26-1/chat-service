@@ -68,6 +68,47 @@ make smoke     # grpc end-to-end smoke check
 make proto     # regenerate protobuf Go stubs
 ```
 
+## Attachment Uploads
+
+Image and file attachments are optional and use signed GCS upload URLs.
+
+- Configure `GCP_STORAGE_BUCKET`
+- Authenticate with ADC, for example `gcloud auth application-default login`
+- If ADC cannot auto-detect a signing identity, also set `GCP_SIGNING_SERVICE_ACCOUNT_EMAIL`
+
+Current attachment flow:
+
+1. Client calls `CreateAttachmentUploadURL` or `CreateImageUploadURL`
+2. Request must include `user_id`, `room_id`, `file_name`, and `content_type`
+3. Backend verifies the user is an active member of that room
+4. Backend returns a room-scoped signed `PUT` upload URL
+5. Client uploads raw bytes directly to GCS
+6. Client calls `SendMessage` with:
+   - `IMAGE` + `image_url`
+   - `FILE` + `file_url` and file metadata
+
+Current read flow:
+
+- the bucket stays private
+- chat-service stores internal object references
+- `SendMessage`, `GetMessages`, and `StreamMessages` return signed read URLs for attachment messages
+- signed read URL expiry is controlled by `GCS_READ_URL_EXPIRES_MINUTES` and defaults to `30`
+
+Attachment URL validation is strict:
+
+- upload URLs are bound to the target room
+- `SendMessage` accepts only backend-issued URLs under the configured bucket and room prefix
+- arbitrary external attachment URLs are rejected
+
+Current GCS object layout is:
+
+- `chat-attachments/<room_id>/<generated-id>.<ext>`
+
+Note:
+
+- upload URLs and read URLs are separate
+- signed URLs should not be logged in full
+
 ## Migration Integration Test
 
 This test is env-gated and runs only when DSN is provided.

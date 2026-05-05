@@ -30,6 +30,7 @@ Implement only the following message types initially:
 - TEXT
 - SYSTEM
 - IMAGE
+- FILE
 
 Do not implement:
 - direct messaging
