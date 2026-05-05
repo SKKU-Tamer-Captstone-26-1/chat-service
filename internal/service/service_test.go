@@ -31,6 +31,26 @@ func (f fakeImageUploadSigner) CreateAttachmentUploadURL(_ context.Context, _, _
 	return f.out, nil
 }
 
+type fakeReadSigner struct {
+	urlPrefix string
+	err       error
+}
+
+func (f fakeReadSigner) CreateAttachmentReadURL(_ context.Context, objectName string) (upload.AttachmentRead, error) {
+	if f.err != nil {
+		return upload.AttachmentRead{}, f.err
+	}
+	prefix := f.urlPrefix
+	if prefix == "" {
+		prefix = "https://signed-read/"
+	}
+	return upload.AttachmentRead{
+		ObjectName: objectName,
+		ReadURL:    prefix + objectName,
+		ExpiresAt:  time.Now().UTC().Add(30 * time.Minute),
+	}, nil
+}
+
 func TestBoardLinkedRoomUniqueness(t *testing.T) {
 	svc, _ := newTestService()
 	ctx := context.Background()
@@ -285,6 +305,7 @@ func TestSendMessageAllowsImageWithURL(t *testing.T) {
 	svc, _ := newTestService()
 	ctx := context.Background()
 	svc.trustedAttachmentBucket = "bucket"
+	svc.attachmentReadSigner = fakeReadSigner{}
 
 	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
 	if err != nil {
@@ -297,8 +318,11 @@ func TestSendMessageAllowsImageWithURL(t *testing.T) {
 	if msg.MessageType != domain.MessageTypeImage {
 		t.Fatalf("expected IMAGE, got %s", msg.MessageType)
 	}
-	if msg.ImageURL != "https://storage.googleapis.com/bucket/chat-attachments/"+room.ID+"/x.png" {
-		t.Fatalf("expected image_url to be stored, got %q", msg.ImageURL)
+	if msg.ImageURL != "https://signed-read/chat-attachments/"+room.ID+"/x.png" {
+		t.Fatalf("expected signed read image_url, got %q", msg.ImageURL)
+	}
+	if got := extractStringMetadata(msg.Metadata, "object_name"); got != "chat-attachments/"+room.ID+"/x.png" {
+		t.Fatalf("expected object_name metadata, got %q", got)
 	}
 }
 
@@ -320,6 +344,7 @@ func TestSendMessageAllowsFileWithMetadata(t *testing.T) {
 	svc, _ := newTestService()
 	ctx := context.Background()
 	svc.trustedAttachmentBucket = "bucket"
+	svc.attachmentReadSigner = fakeReadSigner{}
 
 	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
 	if err != nil {
@@ -336,8 +361,37 @@ func TestSendMessageAllowsFileWithMetadata(t *testing.T) {
 	if msg.MessageType != domain.MessageTypeFile {
 		t.Fatalf("expected FILE, got %s", msg.MessageType)
 	}
-	if msg.FileURL != "https://storage.googleapis.com/bucket/chat-attachments/"+room.ID+"/file.pdf" {
-		t.Fatalf("expected file_url to be stored, got %q", msg.FileURL)
+	if msg.FileURL != "https://signed-read/chat-attachments/"+room.ID+"/file.pdf" {
+		t.Fatalf("expected signed read file_url, got %q", msg.FileURL)
+	}
+	if got := extractStringMetadata(msg.Metadata, "object_name"); got != "chat-attachments/"+room.ID+"/file.pdf" {
+		t.Fatalf("expected object_name metadata, got %q", got)
+	}
+}
+
+func TestGetMessagesHydratesSignedReadURLFromStoredObjectName(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+	svc.trustedAttachmentBucket = "bucket"
+	svc.attachmentReadSigner = fakeReadSigner{}
+
+	room, err := svc.CreateRoom(ctx, CreateRoomInput{CreatorUserID: "owner", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SendMessage(ctx, room.ID, "owner", domain.MessageTypeImage, "", "https://storage.googleapis.com/bucket/chat-attachments/"+room.ID+"/x.png", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, _, err := svc.GetMessages(ctx, room.ID, "owner", 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].ImageURL != "https://signed-read/chat-attachments/"+room.ID+"/x.png" {
+		t.Fatalf("expected signed read image_url, got %q", msgs[0].ImageURL)
 	}
 }
 

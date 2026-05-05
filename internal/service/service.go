@@ -29,6 +29,7 @@ type ChatService struct {
 	repo                    repository.ChatRepository
 	pubsub                  pubsub.RoomPubSub
 	attachmentUploadSigner  upload.AttachmentUploadSigner
+	attachmentReadSigner    upload.AttachmentReadURLSigner
 	trustedAttachmentBucket string
 	now                     func() time.Time
 }
@@ -38,6 +39,12 @@ type Option func(*ChatService)
 func WithAttachmentUploadSigner(signer upload.AttachmentUploadSigner) Option {
 	return func(s *ChatService) {
 		s.attachmentUploadSigner = signer
+	}
+}
+
+func WithAttachmentReadSigner(signer upload.AttachmentReadURLSigner) Option {
+	return func(s *ChatService) {
+		s.attachmentReadSigner = signer
 	}
 }
 
@@ -390,6 +397,10 @@ func (s *ChatService) SendMessage(ctx context.Context, roomID, senderUserID stri
 	if err := s.validateTrustedAttachmentURL(roomID, messageType, imageURL, metadata); err != nil {
 		return domain.ChatMessage{}, err
 	}
+	imageURL, metadata, err = s.normalizeAttachmentReferences(roomID, messageType, imageURL, metadata)
+	if err != nil {
+		return domain.ChatMessage{}, err
+	}
 	now := s.now().UTC()
 	msg := domain.ChatMessage{
 		ID:           id.New(),
@@ -417,7 +428,7 @@ func (s *ChatService) SendMessage(ctx context.Context, roomID, senderUserID stri
 		return domain.ChatMessage{}, err
 	}
 	s.pubsub.Publish(ctx, roomID, saved)
-	return saved, nil
+	return s.hydrateMessageForDelivery(ctx, saved)
 }
 
 func (s *ChatService) DeleteMessage(ctx context.Context, roomID, messageID, ownerUserID string) (domain.ChatMessage, error) {
@@ -482,6 +493,11 @@ func (s *ChatService) GetMessages(ctx context.Context, roomID, userID string, be
 			msgs[i].ImageURL = ""
 			msgs[i].FileURL = ""
 			msgs[i].Metadata = nil
+			continue
+		}
+		msgs[i], err = s.hydrateMessageForDelivery(ctx, msgs[i])
+		if err != nil {
+			return nil, 0, err
 		}
 	}
 	return msgs, nextCursor, nil
@@ -755,21 +771,26 @@ func extractStringMetadata(metadata map[string]any, key string) string {
 }
 
 func validateTrustedStorageURL(rawURL, bucket, roomID string) error {
+	_, err := extractTrustedStorageObjectName(rawURL, bucket, roomID)
+	return err
+}
+
+func extractTrustedStorageObjectName(rawURL, bucket, roomID string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
-		return domain.ErrInvalidArgument
+		return "", domain.ErrInvalidArgument
 	}
 	if parsed.Scheme != "https" {
-		return domain.ErrPermissionDenied
+		return "", domain.ErrPermissionDenied
 	}
 	if !strings.EqualFold(parsed.Host, "storage.googleapis.com") {
-		return domain.ErrPermissionDenied
+		return "", domain.ErrPermissionDenied
 	}
 	expectedPrefix := fmt.Sprintf("/%s/chat-attachments/%s/", strings.TrimSpace(bucket), strings.TrimSpace(roomID))
 	if !strings.HasPrefix(parsed.EscapedPath(), expectedPrefix) && !strings.HasPrefix(parsed.Path, expectedPrefix) {
-		return domain.ErrPermissionDenied
+		return "", domain.ErrPermissionDenied
 	}
-	return nil
+	return strings.TrimPrefix(parsed.Path, "/"+strings.TrimSpace(bucket)+"/"), nil
 }
 
 func (s *ChatService) drainSubscription(sub <-chan domain.ChatMessage, pending map[int64]domain.ChatMessage) {
@@ -794,6 +815,18 @@ func (s *ChatService) flushPendingMessages(ctx context.Context, out chan<- domai
 			return lastDelivered, nil
 		}
 		delete(pending, next)
+		if msg.IsDeleted {
+			msg.Content = ""
+			msg.ImageURL = ""
+			msg.FileURL = ""
+			msg.Metadata = nil
+		} else {
+			var err error
+			msg, err = s.hydrateMessageForDelivery(ctx, msg)
+			if err != nil {
+				return lastDelivered, err
+			}
+		}
 		select {
 		case out <- msg:
 			lastDelivered = next
@@ -801,4 +834,107 @@ func (s *ChatService) flushPendingMessages(ctx context.Context, out chan<- domai
 			return lastDelivered, ctx.Err()
 		}
 	}
+}
+
+func (s *ChatService) normalizeAttachmentReferences(roomID string, messageType domain.MessageType, imageURL string, metadata map[string]any) (string, map[string]any, error) {
+	switch messageType {
+	case domain.MessageTypeImage:
+		objectName, err := extractTrustedStorageObjectName(imageURL, s.trustedAttachmentBucket, roomID)
+		if err != nil {
+			return "", nil, err
+		}
+		out := cloneMetadata(metadata)
+		if out == nil {
+			out = map[string]any{}
+		}
+		out["object_name"] = objectName
+		return objectName, out, nil
+	case domain.MessageTypeFile:
+		fileURL := extractStringMetadata(metadata, "file_url")
+		objectName, err := extractTrustedStorageObjectName(fileURL, s.trustedAttachmentBucket, roomID)
+		if err != nil {
+			return "", nil, err
+		}
+		out := cloneMetadata(metadata)
+		if out == nil {
+			out = map[string]any{}
+		}
+		out["file_url"] = objectName
+		out["object_name"] = objectName
+		return imageURL, out, nil
+	default:
+		return imageURL, cloneMetadata(metadata), nil
+	}
+}
+
+func (s *ChatService) hydrateMessageForDelivery(ctx context.Context, msg domain.ChatMessage) (domain.ChatMessage, error) {
+	if s.attachmentReadSigner == nil {
+		return msg, nil
+	}
+	switch msg.MessageType {
+	case domain.MessageTypeImage:
+		objectName := storedAttachmentObjectName(msg.Metadata, msg.ImageURL)
+		if objectName == "" {
+			return msg, nil
+		}
+		read, err := s.attachmentReadSigner.CreateAttachmentReadURL(ctx, objectName)
+		if err != nil {
+			return domain.ChatMessage{}, err
+		}
+		msg.ImageURL = read.ReadURL
+		msg.Metadata = cloneMetadata(msg.Metadata)
+		if msg.Metadata != nil {
+			msg.Metadata["object_name"] = objectName
+		}
+		return msg, nil
+	case domain.MessageTypeFile:
+		objectName := storedAttachmentObjectName(msg.Metadata, msg.FileURL)
+		if objectName == "" {
+			return msg, nil
+		}
+		read, err := s.attachmentReadSigner.CreateAttachmentReadURL(ctx, objectName)
+		if err != nil {
+			return domain.ChatMessage{}, err
+		}
+		msg.FileURL = read.ReadURL
+		msg.Metadata = cloneMetadata(msg.Metadata)
+		if msg.Metadata != nil {
+			msg.Metadata["object_name"] = objectName
+			msg.Metadata["file_url"] = read.ReadURL
+		}
+		return msg, nil
+	default:
+		return msg, nil
+	}
+}
+
+func storedAttachmentObjectName(metadata map[string]any, fallback string) string {
+	if objectName := extractStringMetadata(metadata, "object_name"); objectName != "" {
+		return objectName
+	}
+	trimmed := strings.TrimSpace(fallback)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "https://storage.googleapis.com/") {
+		parsed, err := url.Parse(trimmed)
+		if err == nil {
+			parts := strings.SplitN(strings.TrimPrefix(parsed.Path, "/"), "/", 2)
+			if len(parts) == 2 {
+				return parts[1]
+			}
+		}
+	}
+	return trimmed
+}
+
+func cloneMetadata(metadata map[string]any) map[string]any {
+	if metadata == nil {
+		return nil
+	}
+	out := make(map[string]any, len(metadata))
+	for k, v := range metadata {
+		out[k] = v
+	}
+	return out
 }

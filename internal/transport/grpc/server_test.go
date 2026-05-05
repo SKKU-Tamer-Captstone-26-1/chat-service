@@ -66,6 +66,26 @@ func (f fakeUploadSigner) CreateAttachmentUploadURL(_ context.Context, _, _, _, 
 	return f.out, nil
 }
 
+type fakeReadSigner struct {
+	urlPrefix string
+	err       error
+}
+
+func (f fakeReadSigner) CreateAttachmentReadURL(_ context.Context, objectName string) (upload.AttachmentRead, error) {
+	if f.err != nil {
+		return upload.AttachmentRead{}, f.err
+	}
+	prefix := f.urlPrefix
+	if prefix == "" {
+		prefix = "https://signed-read/"
+	}
+	return upload.AttachmentRead{
+		ObjectName: objectName,
+		ReadURL:    prefix + objectName,
+		ExpiresAt:  time.Now().UTC().Add(30 * time.Minute),
+	}, nil
+}
+
 func TestGRPCRoomMessageFlow(t *testing.T) {
 	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
 	defer cleanup()
@@ -186,7 +206,7 @@ func TestGRPCListMyRoomsIncludesLastMessagePreview(t *testing.T) {
 }
 
 func TestGRPCSendImageMessagePersistsImageFields(t *testing.T) {
-	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"), service.WithAttachmentReadSigner(fakeReadSigner{}))
 	defer cleanup()
 	ctx := context.Background()
 
@@ -208,8 +228,8 @@ func TestGRPCSendImageMessagePersistsImageFields(t *testing.T) {
 	if sendResp.GetMessage().GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
 		t.Fatalf("expected IMAGE message type, got %s", sendResp.GetMessage().GetMessageType())
 	}
-	if sendResp.GetMessage().GetImageUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/image.png" {
-		t.Fatalf("expected image_url to round-trip, got %q", sendResp.GetMessage().GetImageUrl())
+	if sendResp.GetMessage().GetImageUrl() != "https://signed-read/chat-attachments/"+roomID+"/image.png" {
+		t.Fatalf("expected signed image_url, got %q", sendResp.GetMessage().GetImageUrl())
 	}
 	if sendResp.GetMessage().GetContent() != "" {
 		t.Fatalf("expected empty content for image message, got %q", sendResp.GetMessage().GetContent())
@@ -225,8 +245,8 @@ func TestGRPCSendImageMessagePersistsImageFields(t *testing.T) {
 	if msgsResp.GetMessages()[0].GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
 		t.Fatalf("expected stored IMAGE message type, got %s", msgsResp.GetMessages()[0].GetMessageType())
 	}
-	if msgsResp.GetMessages()[0].GetImageUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/image.png" {
-		t.Fatalf("expected stored image_url, got %q", msgsResp.GetMessages()[0].GetImageUrl())
+	if msgsResp.GetMessages()[0].GetImageUrl() != "https://signed-read/chat-attachments/"+roomID+"/image.png" {
+		t.Fatalf("expected signed image_url in history, got %q", msgsResp.GetMessages()[0].GetImageUrl())
 	}
 }
 
@@ -270,7 +290,7 @@ func TestGRPCListMyRoomsUsesImagePreviewPlaceholder(t *testing.T) {
 }
 
 func TestGRPCStreamDeliversImageMessageLive(t *testing.T) {
-	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"), service.WithAttachmentReadSigner(fakeReadSigner{}))
 	defer cleanup()
 	ctx := context.Background()
 
@@ -313,8 +333,8 @@ func TestGRPCStreamDeliversImageMessageLive(t *testing.T) {
 		if msg.GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_IMAGE {
 			t.Fatalf("expected IMAGE stream message, got %s", msg.GetMessageType())
 		}
-		if msg.GetImageUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/live-image.png" {
-			t.Fatalf("expected live image_url, got %q", msg.GetImageUrl())
+		if msg.GetImageUrl() != "https://signed-read/chat-attachments/"+roomID+"/live-image.png" {
+			t.Fatalf("expected signed live image_url, got %q", msg.GetImageUrl())
 		}
 	case err := <-errCh:
 		t.Fatalf("stream recv failed: %v", err)
@@ -409,7 +429,7 @@ func TestGRPCCreateAttachmentUploadURL(t *testing.T) {
 }
 
 func TestGRPCSendFileMessagePersistsFileFields(t *testing.T) {
-	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"))
+	client, cleanup := startTestGRPCServerWithOptions(t, service.WithTrustedAttachmentBucket("bucket"), service.WithAttachmentReadSigner(fakeReadSigner{}))
 	defer cleanup()
 	ctx := context.Background()
 
@@ -436,8 +456,8 @@ func TestGRPCSendFileMessagePersistsFileFields(t *testing.T) {
 	if sendResp.GetMessage().GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_FILE {
 		t.Fatalf("expected FILE message type, got %s", sendResp.GetMessage().GetMessageType())
 	}
-	if sendResp.GetMessage().GetFileUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/file.pdf" {
-		t.Fatalf("expected file_url to round-trip, got %q", sendResp.GetMessage().GetFileUrl())
+	if sendResp.GetMessage().GetFileUrl() != "https://signed-read/chat-attachments/"+roomID+"/file.pdf" {
+		t.Fatalf("expected signed file_url, got %q", sendResp.GetMessage().GetFileUrl())
 	}
 
 	msgsResp, err := client.GetMessages(ctx, &chatv1.GetMessagesRequest{RoomId: roomID, UserId: "owner", Limit: 20})
@@ -450,8 +470,8 @@ func TestGRPCSendFileMessagePersistsFileFields(t *testing.T) {
 	if msgsResp.GetMessages()[0].GetMessageType() != chatv1.MessageType_MESSAGE_TYPE_FILE {
 		t.Fatalf("expected stored FILE message type, got %s", msgsResp.GetMessages()[0].GetMessageType())
 	}
-	if msgsResp.GetMessages()[0].GetFileUrl() != "https://storage.googleapis.com/bucket/chat-attachments/"+roomID+"/file.pdf" {
-		t.Fatalf("expected stored file_url, got %q", msgsResp.GetMessages()[0].GetFileUrl())
+	if msgsResp.GetMessages()[0].GetFileUrl() != "https://signed-read/chat-attachments/"+roomID+"/file.pdf" {
+		t.Fatalf("expected signed file_url in history, got %q", msgsResp.GetMessages()[0].GetFileUrl())
 	}
 }
 

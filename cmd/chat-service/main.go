@@ -51,6 +51,7 @@ func main() {
 			}
 		}()
 		opts = append(opts, service.WithAttachmentUploadSigner(signer))
+		opts = append(opts, service.WithAttachmentReadSigner(signer))
 		opts = append(opts, service.WithTrustedAttachmentBucket(strings.TrimSpace(os.Getenv("GCP_STORAGE_BUCKET"))))
 		log.Printf("attachment upload signer enabled for bucket %s", os.Getenv("GCP_STORAGE_BUCKET"))
 	}
@@ -131,9 +132,22 @@ func initAttachmentUploadSigner() (*gcsupload.Signer, bool, error) {
 	if bucket == "" {
 		return nil, false, nil
 	}
-	signer, err := gcsupload.NewSigner(context.Background(), bucket, googleAccessID)
+	signer, err := gcsupload.NewSigner(context.Background(), bucket, googleAccessID, gcsupload.WithReadURLExpiry(readURLExpiry()))
 	if err != nil {
 		return nil, false, err
 	}
 	return signer, true, nil
+}
+
+func readURLExpiry() time.Duration {
+	const defaultMinutes = 30
+	raw := strings.TrimSpace(os.Getenv("GCS_READ_URL_EXPIRES_MINUTES"))
+	if raw == "" {
+		return defaultMinutes * time.Minute
+	}
+	minutes, err := time.ParseDuration(raw + "m")
+	if err != nil || minutes <= 0 {
+		return defaultMinutes * time.Minute
+	}
+	return minutes
 }

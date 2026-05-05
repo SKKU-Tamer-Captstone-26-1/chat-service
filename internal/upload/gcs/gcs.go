@@ -14,17 +14,29 @@ import (
 )
 
 const uploadExpiry = 15 * time.Minute
+const defaultReadExpiry = 30 * time.Minute
 
 type Signer struct {
 	bucket         string
 	googleAccessID string
 	client         *storage.Client
 	handle         *storage.BucketHandle
+	readExpiry     time.Duration
 }
 
 var safePathSegmentPattern = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 
-func NewSigner(ctx context.Context, bucketName, googleAccessID string) (*Signer, error) {
+type Option func(*Signer)
+
+func WithReadURLExpiry(expiry time.Duration) Option {
+	return func(s *Signer) {
+		if expiry > 0 {
+			s.readExpiry = expiry
+		}
+	}
+}
+
+func NewSigner(ctx context.Context, bucketName, googleAccessID string, opts ...Option) (*Signer, error) {
 	if strings.TrimSpace(bucketName) == "" {
 		return nil, fmt.Errorf("bucket name is required")
 	}
@@ -32,12 +44,17 @@ func NewSigner(ctx context.Context, bucketName, googleAccessID string) (*Signer,
 	if err != nil {
 		return nil, err
 	}
-	return &Signer{
+	signer := &Signer{
 		bucket:         strings.TrimSpace(bucketName),
 		googleAccessID: strings.TrimSpace(googleAccessID),
 		client:         client,
 		handle:         client.Bucket(strings.TrimSpace(bucketName)),
-	}, nil
+		readExpiry:     defaultReadExpiry,
+	}
+	for _, opt := range opts {
+		opt(signer)
+	}
+	return signer, nil
 }
 
 func (s *Signer) Close() error {
@@ -85,6 +102,33 @@ func (s *Signer) CreateImageUploadURL(ctx context.Context, roomID, userID, fileN
 		UploadURL:  out.UploadURL,
 		ImageURL:   out.FileURL,
 		ExpiresAt:  out.ExpiresAt,
+	}, nil
+}
+
+func (s *Signer) CreateAttachmentReadURL(_ context.Context, objectName string) (upload.AttachmentRead, error) {
+	now := time.Now().UTC()
+	trimmedObjectName := strings.TrimSpace(objectName)
+	if trimmedObjectName == "" {
+		return upload.AttachmentRead{}, fmt.Errorf("object name is required")
+	}
+
+	opts := &storage.SignedURLOptions{
+		Scheme:  storage.SigningSchemeV4,
+		Method:  "GET",
+		Expires: now.Add(s.readExpiry),
+	}
+	if s.googleAccessID != "" {
+		opts.GoogleAccessID = s.googleAccessID
+	}
+	readURL, err := s.handle.SignedURL(trimmedObjectName, opts)
+	if err != nil {
+		return upload.AttachmentRead{}, err
+	}
+
+	return upload.AttachmentRead{
+		ObjectName: trimmedObjectName,
+		ReadURL:    readURL,
+		ExpiresAt:  now.Add(s.readExpiry),
 	}, nil
 }
 
