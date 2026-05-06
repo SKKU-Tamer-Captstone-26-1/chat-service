@@ -19,6 +19,11 @@ For higher-level repository philosophy, follow `CLAUDE.md`.
 - Proto contracts are created in this repository first and may be moved to shared infra later.
 - This repository uses internal user IDs supplied by external systems.
 - Notification delivery is out of scope for this repository.
+- Keep chat media buckets private.
+- Use signed upload and signed read URLs for attachments.
+- Do not log full signed URLs.
+- Do not store image/file binaries in PostgreSQL.
+- Store only message metadata and internal object references for attachments.
 
 ## Functional Scope
 

@@ -52,11 +52,20 @@ Supported message types for the initial version:
 - TEXT
 - SYSTEM
 - IMAGE
+- FILE
 
 Message edit is not required for the initial version.
 
 Message deletion must be soft deletion.
 Deleted records must remain in the database.
+
+### Attachment Storage
+- Chat media buckets must remain private.
+- Use signed upload URLs for client-to-storage writes.
+- Use signed read URLs for attachment delivery to clients.
+- Do not log full signed URLs.
+- Do not store image or file binaries in PostgreSQL.
+- Store only message metadata and internal object references in the database.
 
 ### Room Deletion
 Room deletion must be soft deletion or inactive handling.
@@ -112,7 +121,7 @@ Proto definitions should reflect:
 - open room join behavior
 - soft deletion semantics
 - read/unread support
-- image support in addition to text and system messages
+- image and file support in addition to text and system messages
 
 ## Persistence Rules
 

@@ -76,6 +76,9 @@ Image and file attachments are optional and use signed GCS upload URLs.
 - Authenticate with ADC, for example `gcloud auth application-default login`
 - If ADC cannot auto-detect a signing identity, also set `GCP_SIGNING_SERVICE_ACCOUNT_EMAIL`
 
+The canonical bucket env var in this repository is `GCP_STORAGE_BUCKET`.
+Do not use `GCS_BUCKET_NAME` unless you also change the application code.
+
 Current attachment flow:
 
 1. Client calls `CreateAttachmentUploadURL` or `CreateImageUploadURL`
@@ -86,6 +89,11 @@ Current attachment flow:
 6. Client calls `SendMessage` with:
    - `IMAGE` + `image_url`
    - `FILE` + `file_url` and file metadata
+
+Upload URL expiry:
+
+- currently fixed at `15` minutes in code
+- `GCS_UPLOAD_URL_EXPIRES_MINUTES` is not implemented yet
 
 Current read flow:
 
