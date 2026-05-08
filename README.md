@@ -1,6 +1,7 @@
 # chat-service
-
 Group-chat-only backend service for On the Block.
+
+![ERD](/docs/images/chat-database-erd.png)
 
 ## Local PostgreSQL Development
 
