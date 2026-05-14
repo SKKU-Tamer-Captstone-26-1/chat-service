@@ -59,6 +59,28 @@ make smoke
 make run-memory
 ```
 
+## Auth Modes
+
+- `CHAT_AUTH_MODE=dev` (default): pre-auth/local mode. The service trusts request-body user IDs such as `user_id`, `creator_user_id`, and `sender_user_id`.
+- `CHAT_AUTH_MODE=validate_token`: production mode. Every gRPC call must include `Authorization: Bearer <access_token>`.
+
+In `validate_token` mode, chat-service calls auth-service `ValidateToken`, derives the internal user ID from `ValidateTokenResponse.user_id`, then calls `GetMe` for the authenticated user's own profile including `profile_image_url`. Chat-service still persists only chat-domain IDs such as `sender_user_id`; profile and avatar data remain owned by auth-service.
+
+```bash
+CHAT_AUTH_MODE=validate_token
+CHAT_AUTH_SERVICE_URL=https://authorization-service-44649239380.asia-northeast3.run.app
+```
+
+For local auth-service:
+
+```bash
+CHAT_AUTH_MODE=validate_token
+CHAT_AUTH_GRPC_ADDR=localhost:9090
+CHAT_AUTH_INSECURE=true
+```
+
+If the Cloud Run auth service is private, the chat-service runtime identity must be allowed to invoke it.
+
 ## Useful Commands
 
 ```bash
