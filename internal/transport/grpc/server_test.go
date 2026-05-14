@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ontheblock/chat-service/internal/auth"
 	"github.com/ontheblock/chat-service/internal/pubsub"
 	"github.com/ontheblock/chat-service/internal/repository/memory"
 	"github.com/ontheblock/chat-service/internal/service"
@@ -640,5 +641,48 @@ func TestGRPCSendMessageRejectsInvalidImagePayload(t *testing.T) {
 	}
 	if st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected INVALID_ARGUMENT, got %s", st.Code())
+	}
+}
+
+func TestGRPCAuthenticatedUserCanOmitBodyUserID(t *testing.T) {
+	store := memory.NewStore()
+	svc := service.New(store, store, pubsub.NewMemoryRoomPubSub())
+	server := NewServer(svc)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{UserID: "owner", Role: auth.RoleNormal})
+
+	createResp, err := server.CreateRoom(ctx, &chatv1.CreateRoomRequest{Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+
+	sendResp, err := server.SendMessage(ctx, &chatv1.SendMessageRequest{
+		RoomId:      createResp.GetRoom().GetRoomId(),
+		MessageType: chatv1.MessageType_MESSAGE_TYPE_TEXT,
+		Content:     "hello",
+	})
+	if err != nil {
+		t.Fatalf("send message failed: %v", err)
+	}
+	if sendResp.GetMessage().GetSenderUserId() != "owner" {
+		t.Fatalf("expected sender from auth principal, got %q", sendResp.GetMessage().GetSenderUserId())
+	}
+}
+
+func TestGRPCAuthenticatedUserRejectsMismatchedBodyUserID(t *testing.T) {
+	store := memory.NewStore()
+	svc := service.New(store, store, pubsub.NewMemoryRoomPubSub())
+	server := NewServer(svc)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{UserID: "owner", Role: auth.RoleNormal})
+
+	_, err := server.CreateRoom(ctx, &chatv1.CreateRoomRequest{CreatorUserId: "someone-else", Title: "room"})
+	if err == nil {
+		t.Fatal("expected mismatched creator_user_id to fail")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %v", err)
+	}
+	if st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PERMISSION_DENIED, got %s", st.Code())
 	}
 }

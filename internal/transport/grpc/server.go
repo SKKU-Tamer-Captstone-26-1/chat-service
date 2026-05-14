@@ -3,7 +3,9 @@ package grpc
 import (
 	"context"
 	"errors"
+	"strings"
 
+	"github.com/ontheblock/chat-service/internal/auth"
 	"github.com/ontheblock/chat-service/internal/domain"
 	"github.com/ontheblock/chat-service/internal/service"
 	chatv1 "github.com/ontheblock/chat-service/proto/chat/v1"
@@ -23,10 +25,11 @@ func NewServer(svc *service.ChatService) *Server {
 }
 
 func (s *Server) CreateRoom(ctx context.Context, req *chatv1.CreateRoomRequest) (*chatv1.CreateRoomResponse, error) {
-	if req.GetCreatorUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "creator_user_id is required")
+	creatorUserID, err := requestUserID(ctx, req.GetCreatorUserId(), "creator_user_id")
+	if err != nil {
+		return nil, err
 	}
-	room, err := s.svc.CreateRoom(ctx, service.CreateRoomInput{CreatorUserID: req.GetCreatorUserId(), Title: req.GetTitle()})
+	room, err := s.svc.CreateRoom(ctx, service.CreateRoomInput{CreatorUserID: creatorUserID, Title: req.GetTitle()})
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -34,11 +37,15 @@ func (s *Server) CreateRoom(ctx context.Context, req *chatv1.CreateRoomRequest) 
 }
 
 func (s *Server) CreateBoardLinkedRoom(ctx context.Context, req *chatv1.CreateBoardLinkedRoomRequest) (*chatv1.CreateBoardLinkedRoomResponse, error) {
-	if req.GetCreatorUserId() == "" || req.GetBoardId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "creator_user_id and board_id are required")
+	creatorUserID, err := requestUserID(ctx, req.GetCreatorUserId(), "creator_user_id")
+	if err != nil {
+		return nil, err
+	}
+	if req.GetBoardId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "board_id is required")
 	}
 	room, exists, err := s.svc.CreateBoardLinkedRoom(ctx, service.CreateBoardLinkedRoomInput{
-		CreatorUserID: req.GetCreatorUserId(),
+		CreatorUserID: creatorUserID,
 		BoardID:       req.GetBoardId(),
 		Title:         req.GetTitle(),
 	})
@@ -53,10 +60,14 @@ func (s *Server) CreateBoardLinkedRoom(ctx context.Context, req *chatv1.CreateBo
 }
 
 func (s *Server) JoinRoom(ctx context.Context, req *chatv1.JoinRoomRequest) (*chatv1.JoinRoomResponse, error) {
-	if req.GetRoomId() == "" || req.GetUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "room_id and user_id are required")
+	userID, err := requestUserID(ctx, req.GetUserId(), "user_id")
+	if err != nil {
+		return nil, err
 	}
-	member, err := s.svc.JoinRoom(ctx, req.GetRoomId(), req.GetUserId())
+	if req.GetRoomId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id is required")
+	}
+	member, err := s.svc.JoinRoom(ctx, req.GetRoomId(), userID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -64,10 +75,14 @@ func (s *Server) JoinRoom(ctx context.Context, req *chatv1.JoinRoomRequest) (*ch
 }
 
 func (s *Server) LeaveRoom(ctx context.Context, req *chatv1.LeaveRoomRequest) (*chatv1.LeaveRoomResponse, error) {
-	if req.GetRoomId() == "" || req.GetUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "room_id and user_id are required")
+	userID, err := requestUserID(ctx, req.GetUserId(), "user_id")
+	if err != nil {
+		return nil, err
 	}
-	member, room, err := s.svc.LeaveRoom(ctx, req.GetRoomId(), req.GetUserId())
+	if req.GetRoomId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id is required")
+	}
+	member, room, err := s.svc.LeaveRoom(ctx, req.GetRoomId(), userID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -75,8 +90,9 @@ func (s *Server) LeaveRoom(ctx context.Context, req *chatv1.LeaveRoomRequest) (*
 }
 
 func (s *Server) ListMyRooms(ctx context.Context, req *chatv1.ListMyRoomsRequest) (*chatv1.ListMyRoomsResponse, error) {
-	if req.GetUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	userID, err := requestUserID(ctx, req.GetUserId(), "user_id")
+	if err != nil {
+		return nil, err
 	}
 	limit := 20
 	pageToken := ""
@@ -87,7 +103,7 @@ func (s *Server) ListMyRooms(ctx context.Context, req *chatv1.ListMyRoomsRequest
 		pageToken = req.GetPagination().GetPageToken()
 	}
 
-	rows, nextToken, err := s.svc.ListMyRooms(ctx, req.GetUserId(), limit, pageToken)
+	rows, nextToken, err := s.svc.ListMyRooms(ctx, userID, limit, pageToken)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -131,10 +147,14 @@ func (s *Server) ListMyRooms(ctx context.Context, req *chatv1.ListMyRoomsRequest
 }
 
 func (s *Server) GetMessages(ctx context.Context, req *chatv1.GetMessagesRequest) (*chatv1.GetMessagesResponse, error) {
-	if req.GetRoomId() == "" || req.GetUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "room_id and user_id are required")
+	userID, err := requestUserID(ctx, req.GetUserId(), "user_id")
+	if err != nil {
+		return nil, err
 	}
-	msgs, next, err := s.svc.GetMessages(ctx, req.GetRoomId(), req.GetUserId(), req.GetBeforeSequenceNo(), int(req.GetLimit()))
+	if req.GetRoomId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id is required")
+	}
+	msgs, next, err := s.svc.GetMessages(ctx, req.GetRoomId(), userID, req.GetBeforeSequenceNo(), int(req.GetLimit()))
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -146,8 +166,12 @@ func (s *Server) GetMessages(ctx context.Context, req *chatv1.GetMessagesRequest
 }
 
 func (s *Server) SendMessage(ctx context.Context, req *chatv1.SendMessageRequest) (*chatv1.SendMessageResponse, error) {
-	if req.GetRoomId() == "" || req.GetSenderUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "room_id and sender_user_id are required")
+	senderUserID, err := requestUserID(ctx, req.GetSenderUserId(), "sender_user_id")
+	if err != nil {
+		return nil, err
+	}
+	if req.GetRoomId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id is required")
 	}
 	metadata := map[string]any{}
 	if req.GetMetadata() != nil {
@@ -156,7 +180,7 @@ func (s *Server) SendMessage(ctx context.Context, req *chatv1.SendMessageRequest
 	if req.GetFileUrl() != "" {
 		metadata["file_url"] = req.GetFileUrl()
 	}
-	msg, err := s.svc.SendMessage(ctx, req.GetRoomId(), req.GetSenderUserId(), fromPBMessageType(req.GetMessageType()), req.GetContent(), req.GetImageUrl(), metadata)
+	msg, err := s.svc.SendMessage(ctx, req.GetRoomId(), senderUserID, fromPBMessageType(req.GetMessageType()), req.GetContent(), req.GetImageUrl(), metadata)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -164,10 +188,14 @@ func (s *Server) SendMessage(ctx context.Context, req *chatv1.SendMessageRequest
 }
 
 func (s *Server) CreateAttachmentUploadURL(ctx context.Context, req *chatv1.CreateAttachmentUploadURLRequest) (*chatv1.CreateAttachmentUploadURLResponse, error) {
-	if req.GetUserId() == "" || req.GetRoomId() == "" || req.GetFileName() == "" || req.GetContentType() == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id, room_id, file_name, content_type are required")
+	userID, err := requestUserID(ctx, req.GetUserId(), "user_id")
+	if err != nil {
+		return nil, err
 	}
-	out, err := s.svc.CreateAttachmentUploadURL(ctx, req.GetRoomId(), req.GetUserId(), req.GetFileName(), req.GetContentType())
+	if req.GetRoomId() == "" || req.GetFileName() == "" || req.GetContentType() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id, file_name, content_type are required")
+	}
+	out, err := s.svc.CreateAttachmentUploadURL(ctx, req.GetRoomId(), userID, req.GetFileName(), req.GetContentType())
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -180,10 +208,14 @@ func (s *Server) CreateAttachmentUploadURL(ctx context.Context, req *chatv1.Crea
 }
 
 func (s *Server) CreateImageUploadURL(ctx context.Context, req *chatv1.CreateImageUploadURLRequest) (*chatv1.CreateImageUploadURLResponse, error) {
-	if req.GetUserId() == "" || req.GetRoomId() == "" || req.GetFileName() == "" || req.GetContentType() == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id, room_id, file_name, content_type are required")
+	userID, err := requestUserID(ctx, req.GetUserId(), "user_id")
+	if err != nil {
+		return nil, err
 	}
-	out, err := s.svc.CreateImageUploadURL(ctx, req.GetRoomId(), req.GetUserId(), req.GetFileName(), req.GetContentType())
+	if req.GetRoomId() == "" || req.GetFileName() == "" || req.GetContentType() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id, file_name, content_type are required")
+	}
+	out, err := s.svc.CreateImageUploadURL(ctx, req.GetRoomId(), userID, req.GetFileName(), req.GetContentType())
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -196,10 +228,14 @@ func (s *Server) CreateImageUploadURL(ctx context.Context, req *chatv1.CreateIma
 }
 
 func (s *Server) MarkAsRead(ctx context.Context, req *chatv1.MarkAsReadRequest) (*chatv1.MarkAsReadResponse, error) {
-	if req.GetRoomId() == "" || req.GetUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "room_id and user_id are required")
+	userID, err := requestUserID(ctx, req.GetUserId(), "user_id")
+	if err != nil {
+		return nil, err
 	}
-	m, err := s.svc.MarkAsRead(ctx, req.GetRoomId(), req.GetUserId(), req.GetLastReadSequenceNo())
+	if req.GetRoomId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id is required")
+	}
+	m, err := s.svc.MarkAsRead(ctx, req.GetRoomId(), userID, req.GetLastReadSequenceNo())
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -215,10 +251,14 @@ func (s *Server) MarkAsRead(ctx context.Context, req *chatv1.MarkAsReadRequest) 
 }
 
 func (s *Server) RemoveMember(ctx context.Context, req *chatv1.RemoveMemberRequest) (*chatv1.RemoveMemberResponse, error) {
-	if req.GetRoomId() == "" || req.GetOwnerUserId() == "" || req.GetTargetUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "room_id, owner_user_id, target_user_id are required")
+	ownerUserID, err := requestUserID(ctx, req.GetOwnerUserId(), "owner_user_id")
+	if err != nil {
+		return nil, err
 	}
-	m, err := s.svc.RemoveMember(ctx, req.GetRoomId(), req.GetOwnerUserId(), req.GetTargetUserId())
+	if req.GetRoomId() == "" || req.GetTargetUserId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id and target_user_id are required")
+	}
+	m, err := s.svc.RemoveMember(ctx, req.GetRoomId(), ownerUserID, req.GetTargetUserId())
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -226,10 +266,14 @@ func (s *Server) RemoveMember(ctx context.Context, req *chatv1.RemoveMemberReque
 }
 
 func (s *Server) DeleteMessage(ctx context.Context, req *chatv1.DeleteMessageRequest) (*chatv1.DeleteMessageResponse, error) {
-	if req.GetRoomId() == "" || req.GetMessageId() == "" || req.GetOwnerUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "room_id, message_id, owner_user_id are required")
+	ownerUserID, err := requestUserID(ctx, req.GetOwnerUserId(), "owner_user_id")
+	if err != nil {
+		return nil, err
 	}
-	m, err := s.svc.DeleteMessage(ctx, req.GetRoomId(), req.GetMessageId(), req.GetOwnerUserId())
+	if req.GetRoomId() == "" || req.GetMessageId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id and message_id are required")
+	}
+	m, err := s.svc.DeleteMessage(ctx, req.GetRoomId(), req.GetMessageId(), ownerUserID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -237,10 +281,14 @@ func (s *Server) DeleteMessage(ctx context.Context, req *chatv1.DeleteMessageReq
 }
 
 func (s *Server) DeactivateRoom(ctx context.Context, req *chatv1.DeactivateRoomRequest) (*chatv1.DeactivateRoomResponse, error) {
-	if req.GetRoomId() == "" || req.GetOwnerUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "room_id and owner_user_id are required")
+	ownerUserID, err := requestUserID(ctx, req.GetOwnerUserId(), "owner_user_id")
+	if err != nil {
+		return nil, err
 	}
-	r, err := s.svc.DeactivateRoom(ctx, req.GetRoomId(), req.GetOwnerUserId())
+	if req.GetRoomId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id is required")
+	}
+	r, err := s.svc.DeactivateRoom(ctx, req.GetRoomId(), ownerUserID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -248,10 +296,14 @@ func (s *Server) DeactivateRoom(ctx context.Context, req *chatv1.DeactivateRoomR
 }
 
 func (s *Server) StreamMessages(req *chatv1.StreamMessagesRequest, stream chatv1.ChatService_StreamMessagesServer) error {
-	if req.GetRoomId() == "" || req.GetUserId() == "" {
-		return status.Error(codes.InvalidArgument, "room_id and user_id are required")
+	userID, err := requestUserID(stream.Context(), req.GetUserId(), "user_id")
+	if err != nil {
+		return err
 	}
-	msgCh, errCh := s.svc.StreamMessages(stream.Context(), req.GetRoomId(), req.GetUserId(), req.GetAfterSequenceNo())
+	if req.GetRoomId() == "" {
+		return status.Error(codes.InvalidArgument, "room_id is required")
+	}
+	msgCh, errCh := s.svc.StreamMessages(stream.Context(), req.GetRoomId(), userID, req.GetAfterSequenceNo())
 	for {
 		select {
 		case <-stream.Context().Done():
@@ -279,6 +331,20 @@ func (s *Server) StreamMessages(req *chatv1.StreamMessagesRequest, stream chatv1
 			}
 		}
 	}
+}
+
+func requestUserID(ctx context.Context, bodyUserID, fieldName string) (string, error) {
+	trimmedBodyUserID := strings.TrimSpace(bodyUserID)
+	if principal, ok := auth.PrincipalFromContext(ctx); ok {
+		if trimmedBodyUserID != "" && trimmedBodyUserID != principal.UserID {
+			return "", status.Errorf(codes.PermissionDenied, "%s does not match authenticated user", fieldName)
+		}
+		return principal.UserID, nil
+	}
+	if trimmedBodyUserID == "" {
+		return "", status.Errorf(codes.InvalidArgument, "%s is required", fieldName)
+	}
+	return trimmedBodyUserID, nil
 }
 
 func mapError(err error) error {
