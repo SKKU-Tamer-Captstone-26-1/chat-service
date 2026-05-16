@@ -686,3 +686,173 @@ func TestGRPCAuthenticatedUserRejectsMismatchedBodyUserID(t *testing.T) {
 		t.Fatalf("expected PERMISSION_DENIED, got %s", st.Code())
 	}
 }
+
+func TestGRPCGetOrCreateBoardChatRoomUsesAuthenticatedUser(t *testing.T) {
+	store := memory.NewStore()
+	svc := service.New(store, store, pubsub.NewMemoryRoomPubSub())
+	server := NewServer(svc)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{UserID: "viewer", Role: auth.RoleNormal})
+
+	first, err := server.GetOrCreateBoardChatRoom(ctx, &chatv1.GetOrCreateBoardChatRoomRequest{
+		BoardId:          "board-1",
+		Title:            "Board room",
+		BoardOwnerUserId: "board-owner",
+	})
+	if err != nil {
+		t.Fatalf("first board chat entry failed: %v", err)
+	}
+	if first.GetAlreadyExists() {
+		t.Fatalf("first board chat entry should create a room")
+	}
+	if first.GetMember().GetUserId() != "viewer" {
+		t.Fatalf("expected member from authenticated user, got %q", first.GetMember().GetUserId())
+	}
+	if first.GetRoom().GetLinkedBoardId() != "board-1" {
+		t.Fatalf("expected linked board id board-1, got %q", first.GetRoom().GetLinkedBoardId())
+	}
+
+	second, err := server.GetOrCreateBoardChatRoom(ctx, &chatv1.GetOrCreateBoardChatRoomRequest{
+		BoardId: "board-1",
+		Title:   "Ignored title",
+	})
+	if err != nil {
+		t.Fatalf("second board chat entry failed: %v", err)
+	}
+	if !second.GetAlreadyExists() {
+		t.Fatalf("second board chat entry should return existing room")
+	}
+	if second.GetRoom().GetRoomId() != first.GetRoom().GetRoomId() {
+		t.Fatalf("expected same room id, got %q and %q", first.GetRoom().GetRoomId(), second.GetRoom().GetRoomId())
+	}
+	if _, err := store.GetMember(context.Background(), first.GetRoom().GetRoomId(), "board-owner"); err != nil {
+		t.Fatalf("expected board owner member: %v", err)
+	}
+}
+
+func TestGRPCGetOrCreateBoardChatRoomRequiresAuthenticatedUser(t *testing.T) {
+	store := memory.NewStore()
+	svc := service.New(store, store, pubsub.NewMemoryRoomPubSub())
+	server := NewServer(svc)
+
+	_, err := server.GetOrCreateBoardChatRoom(context.Background(), &chatv1.GetOrCreateBoardChatRoomRequest{
+		BoardId: "board-1",
+	})
+	if err == nil {
+		t.Fatal("expected unauthenticated request to fail")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %v", err)
+	}
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected UNAUTHENTICATED, got %s", st.Code())
+	}
+}
+
+func TestGRPCMarkChatRoomReadUsesAuthenticatedUser(t *testing.T) {
+	store := memory.NewStore()
+	svc := service.New(store, store, pubsub.NewMemoryRoomPubSub())
+	server := NewServer(svc)
+	ownerCtx := auth.WithPrincipal(context.Background(), auth.Principal{UserID: "owner", Role: auth.RoleNormal})
+	memberCtx := auth.WithPrincipal(context.Background(), auth.Principal{UserID: "member", Role: auth.RoleNormal})
+
+	createResp, err := server.CreateRoom(ownerCtx, &chatv1.CreateRoomRequest{Title: "room"})
+	if err != nil {
+		t.Fatalf("create room failed: %v", err)
+	}
+	roomID := createResp.GetRoom().GetRoomId()
+	if _, err := server.JoinRoom(memberCtx, &chatv1.JoinRoomRequest{RoomId: roomID}); err != nil {
+		t.Fatalf("join room failed: %v", err)
+	}
+	if _, err := server.SendMessage(ownerCtx, &chatv1.SendMessageRequest{
+		RoomId:      roomID,
+		MessageType: chatv1.MessageType_MESSAGE_TYPE_TEXT,
+		Content:     "hello",
+	}); err != nil {
+		t.Fatalf("send message failed: %v", err)
+	}
+
+	listResp, err := server.ListMyRooms(memberCtx, &chatv1.ListMyRoomsRequest{})
+	if err != nil {
+		t.Fatalf("list rooms failed: %v", err)
+	}
+	if len(listResp.GetRooms()) != 1 || listResp.GetRooms()[0].GetUnreadCount() != 1 {
+		t.Fatalf("expected member unread count 1, got %+v", listResp.GetRooms())
+	}
+
+	readResp, err := server.MarkChatRoomRead(memberCtx, &chatv1.MarkChatRoomReadRequest{RoomId: roomID})
+	if err != nil {
+		t.Fatalf("mark chat room read failed: %v", err)
+	}
+	if readResp.GetUserId() != "member" || readResp.GetLastReadSequenceNo() != 1 {
+		t.Fatalf("unexpected mark read response: %+v", readResp)
+	}
+
+	listResp, err = server.ListMyRooms(memberCtx, &chatv1.ListMyRoomsRequest{})
+	if err != nil {
+		t.Fatalf("list rooms after mark read failed: %v", err)
+	}
+	if len(listResp.GetRooms()) != 1 || listResp.GetRooms()[0].GetUnreadCount() != 0 {
+		t.Fatalf("expected unread count reset to 0, got %+v", listResp.GetRooms())
+	}
+}
+
+func TestGRPCRegisterDeviceTokenUsesAuthenticatedUser(t *testing.T) {
+	store := memory.NewStore()
+	svc := service.New(store, store, pubsub.NewMemoryRoomPubSub())
+	server := NewServer(svc)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{UserID: "user-1", Role: auth.RoleNormal})
+
+	resp, err := server.RegisterDeviceToken(ctx, &chatv1.RegisterDeviceTokenRequest{
+		DeviceId: "device-1",
+		Token:    "fcm-token",
+		Platform: chatv1.DevicePlatform_DEVICE_PLATFORM_ANDROID,
+	})
+	if err != nil {
+		t.Fatalf("register device token failed: %v", err)
+	}
+	if resp.GetDeviceToken().GetUserId() != "user-1" {
+		t.Fatalf("expected authenticated user id, got %q", resp.GetDeviceToken().GetUserId())
+	}
+
+	active, err := store.ListActiveDeviceTokensByUserIDs(context.Background(), []string{"user-1"})
+	if err != nil {
+		t.Fatalf("list active tokens failed: %v", err)
+	}
+	if len(active) != 1 || active[0].Token != "fcm-token" {
+		t.Fatalf("expected one active registered token, got %+v", active)
+	}
+
+	if _, err := server.UnregisterDeviceToken(ctx, &chatv1.UnregisterDeviceTokenRequest{DeviceId: "device-1"}); err != nil {
+		t.Fatalf("unregister device token failed: %v", err)
+	}
+	active, err = store.ListActiveDeviceTokensByUserIDs(context.Background(), []string{"user-1"})
+	if err != nil {
+		t.Fatalf("list active tokens after unregister failed: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("expected token to be inactive after unregister, got %+v", active)
+	}
+}
+
+func TestGRPCRegisterDeviceTokenRequiresAuthenticatedUser(t *testing.T) {
+	store := memory.NewStore()
+	svc := service.New(store, store, pubsub.NewMemoryRoomPubSub())
+	server := NewServer(svc)
+
+	_, err := server.RegisterDeviceToken(context.Background(), &chatv1.RegisterDeviceTokenRequest{
+		DeviceId: "device-1",
+		Token:    "fcm-token",
+		Platform: chatv1.DevicePlatform_DEVICE_PLATFORM_IOS,
+	})
+	if err == nil {
+		t.Fatal("expected unauthenticated request to fail")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %v", err)
+	}
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected UNAUTHENTICATED, got %s", st.Code())
+	}
+}

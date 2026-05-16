@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/ontheblock/chat-service/internal/domain"
 )
@@ -27,4 +28,8 @@ type ChatRepository interface {
 	UpdateMessage(ctx context.Context, msg domain.ChatMessage) error
 	ListMessagesBefore(ctx context.Context, roomID string, beforeSequence int64, limit int) ([]domain.ChatMessage, int64, error)
 	ListMessagesAfter(ctx context.Context, roomID string, afterSequence int64, limit int) ([]domain.ChatMessage, error)
+
+	UpsertDeviceToken(ctx context.Context, token domain.DeviceToken) (domain.DeviceToken, error)
+	DeactivateDeviceToken(ctx context.Context, userID, deviceID string, now time.Time) error
+	ListActiveDeviceTokensByUserIDs(ctx context.Context, userIDs []string) ([]domain.DeviceToken, error)
 }

@@ -59,6 +59,31 @@ func (s *Server) CreateBoardLinkedRoom(ctx context.Context, req *chatv1.CreateBo
 	return resp, nil
 }
 
+func (s *Server) GetOrCreateBoardChatRoom(ctx context.Context, req *chatv1.GetOrCreateBoardChatRoomRequest) (*chatv1.GetOrCreateBoardChatRoomResponse, error) {
+	userID, err := authenticatedUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.GetBoardId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "board_id is required")
+	}
+	entry, err := s.svc.GetOrCreateBoardChatRoom(ctx, service.BoardChatRoomEntryInput{
+		UserID:           userID,
+		BoardID:          req.GetBoardId(),
+		BoardOwnerUserID: req.GetBoardOwnerUserId(),
+		Title:            req.GetTitle(),
+	})
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &chatv1.GetOrCreateBoardChatRoomResponse{
+		Room:          toPBRoom(entry.Room),
+		Summary:       toPBRoomSummaryFromRoom(entry.Room),
+		Member:        toPBMember(entry.Member),
+		AlreadyExists: entry.AlreadyExists,
+	}, nil
+}
+
 func (s *Server) JoinRoom(ctx context.Context, req *chatv1.JoinRoomRequest) (*chatv1.JoinRoomResponse, error) {
 	userID, err := requestUserID(ctx, req.GetUserId(), "user_id")
 	if err != nil {
@@ -250,6 +275,52 @@ func (s *Server) MarkAsRead(ctx context.Context, req *chatv1.MarkAsReadRequest) 
 	return out, nil
 }
 
+func (s *Server) MarkChatRoomRead(ctx context.Context, req *chatv1.MarkChatRoomReadRequest) (*chatv1.MarkChatRoomReadResponse, error) {
+	userID, err := authenticatedUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.GetRoomId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "room_id is required")
+	}
+	m, err := s.svc.MarkChatRoomRead(ctx, req.GetRoomId(), userID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	out := &chatv1.MarkChatRoomReadResponse{
+		RoomId:             m.RoomID,
+		UserId:             m.UserID,
+		LastReadSequenceNo: m.LastReadSequenceNo,
+	}
+	if m.UpdatedAt.Unix() > 0 {
+		out.UpdatedAt = timestamppb.New(m.UpdatedAt)
+	}
+	return out, nil
+}
+
+func (s *Server) RegisterDeviceToken(ctx context.Context, req *chatv1.RegisterDeviceTokenRequest) (*chatv1.RegisterDeviceTokenResponse, error) {
+	userID, err := authenticatedUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	token, err := s.svc.RegisterDeviceToken(ctx, userID, req.GetDeviceId(), req.GetToken(), fromPBDevicePlatform(req.GetPlatform()))
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &chatv1.RegisterDeviceTokenResponse{DeviceToken: toPBDeviceToken(token)}, nil
+}
+
+func (s *Server) UnregisterDeviceToken(ctx context.Context, req *chatv1.UnregisterDeviceTokenRequest) (*chatv1.UnregisterDeviceTokenResponse, error) {
+	userID, err := authenticatedUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.svc.UnregisterDeviceToken(ctx, userID, req.GetDeviceId()); err != nil {
+		return nil, mapError(err)
+	}
+	return &chatv1.UnregisterDeviceTokenResponse{}, nil
+}
+
 func (s *Server) RemoveMember(ctx context.Context, req *chatv1.RemoveMemberRequest) (*chatv1.RemoveMemberResponse, error) {
 	ownerUserID, err := requestUserID(ctx, req.GetOwnerUserId(), "owner_user_id")
 	if err != nil {
@@ -347,6 +418,14 @@ func requestUserID(ctx context.Context, bodyUserID, fieldName string) (string, e
 	return trimmedBodyUserID, nil
 }
 
+func authenticatedUserID(ctx context.Context) (string, error) {
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return "", status.Error(codes.Unauthenticated, "authenticated user is required")
+	}
+	return principal.UserID, nil
+}
+
 func mapError(err error) error {
 	if err == nil {
 		return nil
@@ -394,6 +473,17 @@ func toPBRoom(r domain.ChatRoom) *chatv1.ChatRoom {
 	return out
 }
 
+func toPBRoomSummaryFromRoom(r domain.ChatRoom) *chatv1.ChatRoomSummary {
+	return &chatv1.ChatRoomSummary{
+		RoomId:        r.ID,
+		RoomType:      toPBRoomType(r.RoomType),
+		Title:         r.Title,
+		LinkedBoardId: r.LinkedBoardID,
+		OwnerUserId:   r.OwnerUserID,
+		UpdatedAt:     timestamppb.New(r.UpdatedAt),
+	}
+}
+
 func toPBMember(m domain.ChatRoomMember) *chatv1.ChatRoomMember {
 	out := &chatv1.ChatRoomMember{
 		MemberId:           m.ID,
@@ -437,6 +527,19 @@ func toPBMessage(m domain.ChatMessage) *chatv1.ChatMessage {
 	}
 	if m.DeletedAt != nil {
 		out.DeletedAt = timestamppb.New(*m.DeletedAt)
+	}
+	return out
+}
+
+func toPBDeviceToken(token domain.DeviceToken) *chatv1.DeviceToken {
+	out := &chatv1.DeviceToken{
+		UserId:     token.UserID,
+		DeviceId:   token.DeviceID,
+		Token:      token.Token,
+		Platform:   toPBDevicePlatform(token.Platform),
+		CreatedAt:  timestamppb.New(token.CreatedAt),
+		UpdatedAt:  timestamppb.New(token.UpdatedAt),
+		LastSeenAt: timestamppb.New(token.LastSeenAt),
 	}
 	return out
 }
@@ -503,6 +606,28 @@ func fromPBMessageType(t chatv1.MessageType) domain.MessageType {
 		return domain.MessageTypeFile
 	default:
 		return domain.MessageTypeText
+	}
+}
+
+func toPBDevicePlatform(platform domain.DevicePlatform) chatv1.DevicePlatform {
+	switch platform {
+	case domain.DevicePlatformIOS:
+		return chatv1.DevicePlatform_DEVICE_PLATFORM_IOS
+	case domain.DevicePlatformAndroid:
+		return chatv1.DevicePlatform_DEVICE_PLATFORM_ANDROID
+	default:
+		return chatv1.DevicePlatform_DEVICE_PLATFORM_UNSPECIFIED
+	}
+}
+
+func fromPBDevicePlatform(platform chatv1.DevicePlatform) domain.DevicePlatform {
+	switch platform {
+	case chatv1.DevicePlatform_DEVICE_PLATFORM_IOS:
+		return domain.DevicePlatformIOS
+	case chatv1.DevicePlatform_DEVICE_PLATFORM_ANDROID:
+		return domain.DevicePlatformAndroid
+	default:
+		return ""
 	}
 }
 

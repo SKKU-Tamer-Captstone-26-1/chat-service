@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ontheblock/chat-service/internal/domain"
 	"github.com/ontheblock/chat-service/internal/repository"
@@ -18,6 +19,7 @@ type Store struct {
 	rooms    map[string]domain.ChatRoom
 	members  map[string]map[string]domain.ChatRoomMember
 	messages map[string]map[string]domain.ChatMessage
+	devices  map[string]map[string]domain.DeviceToken
 	maxSeq   map[string]int64
 }
 
@@ -26,6 +28,7 @@ func NewStore() *Store {
 		rooms:    map[string]domain.ChatRoom{},
 		members:  map[string]map[string]domain.ChatRoomMember{},
 		messages: map[string]map[string]domain.ChatMessage{},
+		devices:  map[string]map[string]domain.DeviceToken{},
 		maxSeq:   map[string]int64{},
 	}
 }
@@ -93,7 +96,7 @@ func (s *Store) ListRoomsByUser(_ context.Context, userID string, limit int, pag
 		unread := int64(0)
 		var lastMessage *domain.ChatMessage
 		for _, msg := range s.messages[roomID] {
-			if msg.SequenceNo > m.LastReadSequenceNo {
+			if msg.SequenceNo > m.LastReadSequenceNo && msg.SenderUserID != userID {
 				unread++
 			}
 			if lastMessage == nil || msg.SequenceNo > lastMessage.SequenceNo {
@@ -276,4 +279,62 @@ func (s *Store) ListMessagesAfter(_ context.Context, roomID string, afterSequenc
 		all = all[:limit]
 	}
 	return all, nil
+}
+
+func (s *Store) UpsertDeviceToken(_ context.Context, token domain.DeviceToken) (domain.DeviceToken, error) {
+	for userID, userDevices := range s.devices {
+		for deviceID, existing := range userDevices {
+			if existing.Token != token.Token || (userID == token.UserID && deviceID == token.DeviceID) {
+				continue
+			}
+			existing.IsActive = false
+			existing.UpdatedAt = token.UpdatedAt
+			existing.UnregisteredAt = &token.UpdatedAt
+			userDevices[deviceID] = existing
+		}
+	}
+	if _, ok := s.devices[token.UserID]; !ok {
+		s.devices[token.UserID] = map[string]domain.DeviceToken{}
+	}
+	if existing, ok := s.devices[token.UserID][token.DeviceID]; ok && !existing.CreatedAt.IsZero() {
+		token.CreatedAt = existing.CreatedAt
+	}
+	token.IsActive = true
+	token.UnregisteredAt = nil
+	s.devices[token.UserID][token.DeviceID] = token
+	return token, nil
+}
+
+func (s *Store) DeactivateDeviceToken(_ context.Context, userID, deviceID string, now time.Time) error {
+	userDevices, ok := s.devices[userID]
+	if !ok {
+		return nil
+	}
+	token, ok := userDevices[deviceID]
+	if !ok {
+		return nil
+	}
+	token.IsActive = false
+	token.UpdatedAt = now
+	token.UnregisteredAt = &now
+	userDevices[deviceID] = token
+	return nil
+}
+
+func (s *Store) ListActiveDeviceTokensByUserIDs(_ context.Context, userIDs []string) ([]domain.DeviceToken, error) {
+	out := []domain.DeviceToken{}
+	for _, userID := range userIDs {
+		for _, token := range s.devices[userID] {
+			if token.IsActive && strings.TrimSpace(token.Token) != "" {
+				out = append(out, token)
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].UserID == out[j].UserID {
+			return out[i].DeviceID < out[j].DeviceID
+		}
+		return out[i].UserID < out[j].UserID
+	})
+	return out, nil
 }

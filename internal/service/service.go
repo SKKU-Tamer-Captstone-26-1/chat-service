@@ -13,6 +13,7 @@ import (
 	"github.com/ontheblock/chat-service/internal/domain"
 	"github.com/ontheblock/chat-service/internal/id"
 	"github.com/ontheblock/chat-service/internal/pubsub"
+	"github.com/ontheblock/chat-service/internal/push"
 	"github.com/ontheblock/chat-service/internal/repository"
 	"github.com/ontheblock/chat-service/internal/upload"
 )
@@ -28,6 +29,7 @@ type ChatService struct {
 	tx                      repository.TxRunner
 	repo                    repository.ChatRepository
 	pubsub                  pubsub.RoomPubSub
+	pushSender              push.Sender
 	attachmentUploadSigner  upload.AttachmentUploadSigner
 	attachmentReadSigner    upload.AttachmentReadURLSigner
 	trustedAttachmentBucket string
@@ -51,6 +53,12 @@ func WithAttachmentReadSigner(signer upload.AttachmentReadURLSigner) Option {
 func WithTrustedAttachmentBucket(bucket string) Option {
 	return func(s *ChatService) {
 		s.trustedAttachmentBucket = strings.TrimSpace(bucket)
+	}
+}
+
+func WithPushSender(sender push.Sender) Option {
+	return func(s *ChatService) {
+		s.pushSender = sender
 	}
 }
 
@@ -129,6 +137,19 @@ type CreateBoardLinkedRoomInput struct {
 	Title         string
 }
 
+type BoardChatRoomEntryInput struct {
+	UserID           string
+	BoardID          string
+	BoardOwnerUserID string
+	Title            string
+}
+
+type BoardChatRoomEntry struct {
+	Room          domain.ChatRoom
+	Member        domain.ChatRoomMember
+	AlreadyExists bool
+}
+
 func (s *ChatService) CreateBoardLinkedRoom(ctx context.Context, in CreateBoardLinkedRoomInput) (domain.ChatRoom, bool, error) {
 	if _, err := s.repo.GetActiveBoardLinkedRoom(ctx, in.BoardID); err == nil {
 		return domain.ChatRoom{}, true, nil
@@ -175,6 +196,101 @@ func (s *ChatService) CreateBoardLinkedRoom(ctx context.Context, in CreateBoardL
 	return room, false, nil
 }
 
+func (s *ChatService) GetOrCreateBoardChatRoom(ctx context.Context, in BoardChatRoomEntryInput) (BoardChatRoomEntry, error) {
+	in.UserID = strings.TrimSpace(in.UserID)
+	in.BoardID = strings.TrimSpace(in.BoardID)
+	in.BoardOwnerUserID = strings.TrimSpace(in.BoardOwnerUserID)
+	in.Title = strings.TrimSpace(in.Title)
+	if in.UserID == "" || in.BoardID == "" {
+		return BoardChatRoomEntry{}, domain.ErrInvalidArgument
+	}
+
+	entry, err := s.enterExistingBoardChatRoom(ctx, in)
+	if err == nil {
+		entry.AlreadyExists = true
+		return entry, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return BoardChatRoomEntry{}, err
+	}
+
+	entry, err = s.createBoardChatRoom(ctx, in)
+	if err == nil {
+		return entry, nil
+	}
+	if errors.Is(err, domain.ErrAlreadyExists) {
+		entry, err = s.enterExistingBoardChatRoom(ctx, in)
+		if err == nil {
+			entry.AlreadyExists = true
+		}
+	}
+	return entry, err
+}
+
+func (s *ChatService) enterExistingBoardChatRoom(ctx context.Context, in BoardChatRoomEntryInput) (BoardChatRoomEntry, error) {
+	now := s.now().UTC()
+	var out BoardChatRoomEntry
+	err := s.tx.WithTx(ctx, func(ctx context.Context, repo repository.ChatRepository) error {
+		room, err := repo.GetActiveBoardLinkedRoom(ctx, in.BoardID)
+		if err != nil {
+			return err
+		}
+		member, err := ensureActiveMember(ctx, repo, room.ID, in.UserID, now)
+		if err != nil {
+			return err
+		}
+		if err := ensurePassiveMember(ctx, repo, room.ID, in.BoardOwnerUserID, in.UserID, now); err != nil {
+			return err
+		}
+		out = BoardChatRoomEntry{Room: room, Member: member, AlreadyExists: true}
+		return nil
+	})
+	if err != nil {
+		return BoardChatRoomEntry{}, err
+	}
+	return out, nil
+}
+
+func (s *ChatService) createBoardChatRoom(ctx context.Context, in BoardChatRoomEntryInput) (BoardChatRoomEntry, error) {
+	now := s.now().UTC()
+	room := domain.ChatRoom{
+		ID:            id.New(),
+		RoomType:      domain.RoomTypeBoardLinkedGroup,
+		Title:         in.Title,
+		LinkedBoardID: in.BoardID,
+		OwnerUserID:   in.UserID,
+		IsActive:      true,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	member := domain.ChatRoomMember{
+		ID:        id.New(),
+		RoomID:    room.ID,
+		UserID:    in.UserID,
+		Role:      domain.MemberRoleOwner,
+		Status:    domain.MemberStatusActive,
+		JoinedAt:  now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	err := s.tx.WithTx(ctx, func(ctx context.Context, repo repository.ChatRepository) error {
+		if err := repo.CreateRoom(ctx, room); err != nil {
+			return err
+		}
+		if err := repo.CreateMember(ctx, member); err != nil {
+			return err
+		}
+		// TODO: Validate board_owner_user_id against Board-service before using it
+		// for stronger authorization or ownership decisions.
+		return ensurePassiveMember(ctx, repo, room.ID, in.BoardOwnerUserID, in.UserID, now)
+	})
+	if err != nil {
+		return BoardChatRoomEntry{}, err
+	}
+	return BoardChatRoomEntry{Room: room, Member: member}, nil
+}
+
 func (s *ChatService) CreateAttachmentUploadURL(ctx context.Context, roomID, userID, fileName, contentType string) (upload.AttachmentUpload, error) {
 	if s.attachmentUploadSigner == nil {
 		return upload.AttachmentUpload{}, domain.ErrNotConfigured
@@ -202,6 +318,38 @@ func (s *ChatService) CreateImageUploadURL(ctx context.Context, roomID, userID, 
 		ImageURL:   out.FileURL,
 		ExpiresAt:  out.ExpiresAt,
 	}, nil
+}
+
+func (s *ChatService) RegisterDeviceToken(ctx context.Context, userID, deviceID, token string, platform domain.DevicePlatform) (domain.DeviceToken, error) {
+	userID = strings.TrimSpace(userID)
+	deviceID = strings.TrimSpace(deviceID)
+	token = strings.TrimSpace(token)
+	if userID == "" || deviceID == "" || token == "" {
+		return domain.DeviceToken{}, domain.ErrInvalidArgument
+	}
+	if !isValidDevicePlatform(platform) {
+		return domain.DeviceToken{}, domain.ErrInvalidArgument
+	}
+	now := s.now().UTC()
+	return s.repo.UpsertDeviceToken(ctx, domain.DeviceToken{
+		UserID:     userID,
+		DeviceID:   deviceID,
+		Token:      token,
+		Platform:   platform,
+		IsActive:   true,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		LastSeenAt: now,
+	})
+}
+
+func (s *ChatService) UnregisterDeviceToken(ctx context.Context, userID, deviceID string) error {
+	userID = strings.TrimSpace(userID)
+	deviceID = strings.TrimSpace(deviceID)
+	if userID == "" || deviceID == "" {
+		return domain.ErrInvalidArgument
+	}
+	return s.repo.DeactivateDeviceToken(ctx, userID, deviceID, s.now().UTC())
 }
 
 func (s *ChatService) JoinRoom(ctx context.Context, roomID, userID string) (domain.ChatRoomMember, error) {
@@ -250,6 +398,75 @@ func (s *ChatService) JoinRoom(ctx context.Context, roomID, userID string) (doma
 		return domain.ChatRoomMember{}, err
 	}
 	return newMember, nil
+}
+
+func ensureActiveMember(ctx context.Context, repo repository.ChatRepository, roomID, userID string, now time.Time) (domain.ChatRoomMember, error) {
+	m, err := repo.GetMember(ctx, roomID, userID)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return domain.ChatRoomMember{}, err
+	}
+	if err == nil {
+		switch m.Status {
+		case domain.MemberStatusRemoved:
+			return domain.ChatRoomMember{}, domain.ErrRemovedCannotRejoin
+		case domain.MemberStatusActive:
+			return m, nil
+		case domain.MemberStatusLeft:
+			m.Status = domain.MemberStatusActive
+			m.LeftAt = nil
+			m.JoinedAt = now
+			m.UpdatedAt = now
+			if err := repo.UpdateMember(ctx, m); err != nil {
+				return domain.ChatRoomMember{}, err
+			}
+			return m, nil
+		}
+	}
+
+	newMember := domain.ChatRoomMember{
+		ID:        id.New(),
+		RoomID:    roomID,
+		UserID:    userID,
+		Role:      domain.MemberRoleMember,
+		Status:    domain.MemberStatusActive,
+		JoinedAt:  now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := repo.CreateMember(ctx, newMember); err != nil {
+		if errors.Is(err, domain.ErrAlreadyExists) {
+			return repo.GetMember(ctx, roomID, userID)
+		}
+		return domain.ChatRoomMember{}, err
+	}
+	return newMember, nil
+}
+
+func ensurePassiveMember(ctx context.Context, repo repository.ChatRepository, roomID, userID, enteringUserID string, now time.Time) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || userID == enteringUserID {
+		return nil
+	}
+	if _, err := repo.GetMember(ctx, roomID, userID); err == nil {
+		return nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+
+	member := domain.ChatRoomMember{
+		ID:        id.New(),
+		RoomID:    roomID,
+		UserID:    userID,
+		Role:      domain.MemberRoleMember,
+		Status:    domain.MemberStatusActive,
+		JoinedAt:  now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := repo.CreateMember(ctx, member); err != nil && !errors.Is(err, domain.ErrAlreadyExists) {
+		return err
+	}
+	return nil
 }
 
 func (s *ChatService) LeaveRoom(ctx context.Context, roomID, userID string) (domain.ChatRoomMember, domain.ChatRoom, error) {
@@ -428,6 +645,7 @@ func (s *ChatService) SendMessage(ctx context.Context, roomID, senderUserID stri
 		return domain.ChatMessage{}, err
 	}
 	s.pubsub.Publish(ctx, roomID, saved)
+	s.dispatchChatMessagePush(ctx, roomID, senderUserID, saved)
 	return s.hydrateMessageForDelivery(ctx, saved)
 }
 
@@ -521,6 +739,36 @@ func (s *ChatService) MarkAsRead(ctx context.Context, roomID, userID string, las
 		return domain.ChatRoomMember{}, err
 	}
 	return m, nil
+}
+
+func (s *ChatService) MarkChatRoomRead(ctx context.Context, roomID, userID string) (domain.ChatRoomMember, error) {
+	_, member, err := s.validateActiveMembership(ctx, roomID, userID)
+	if err != nil {
+		return domain.ChatRoomMember{}, err
+	}
+	if member.Status != domain.MemberStatusActive {
+		return domain.ChatRoomMember{}, domain.ErrInvalidState
+	}
+
+	msgs, _, err := s.repo.ListMessagesBefore(ctx, roomID, 0, 1)
+	if err != nil {
+		return domain.ChatRoomMember{}, err
+	}
+	latestSequenceNo := int64(0)
+	if len(msgs) > 0 {
+		latestSequenceNo = msgs[0].SequenceNo
+	}
+
+	now := s.now().UTC()
+	if latestSequenceNo > member.LastReadSequenceNo {
+		member.LastReadSequenceNo = latestSequenceNo
+	}
+	member.LastReadAt = &now
+	member.UpdatedAt = now
+	if err := s.repo.UpdateMember(ctx, member); err != nil {
+		return domain.ChatRoomMember{}, err
+	}
+	return member, nil
 }
 
 func (s *ChatService) ListMyRooms(ctx context.Context, userID string, limit int, pageToken string) ([]domain.ChatRoomSummary, string, error) {
@@ -632,6 +880,91 @@ func (s *ChatService) validateActiveMembership(ctx context.Context, roomID, user
 		return domain.ChatRoom{}, domain.ChatRoomMember{}, err
 	}
 	return room, member, nil
+}
+
+func (s *ChatService) dispatchChatMessagePush(ctx context.Context, roomID, senderUserID string, msg domain.ChatMessage) {
+	if s.pushSender == nil {
+		return
+	}
+	members, err := s.repo.ListActiveMembersByJoinOrder(ctx, roomID)
+	if err != nil {
+		return
+	}
+	seen := map[string]struct{}{}
+	recipientUserIDs := make([]string, 0, len(members))
+	for _, member := range members {
+		if member.UserID == senderUserID || member.Status != domain.MemberStatusActive {
+			continue
+		}
+		if _, ok := seen[member.UserID]; ok {
+			continue
+		}
+		seen[member.UserID] = struct{}{}
+		recipientUserIDs = append(recipientUserIDs, member.UserID)
+	}
+	if len(recipientUserIDs) == 0 {
+		return
+	}
+
+	tokens, err := s.repo.ListActiveDeviceTokensByUserIDs(ctx, recipientUserIDs)
+	if err != nil {
+		return
+	}
+	data := map[string]string{
+		"type":       "chat_message",
+		"room_id":    msg.RoomID,
+		"message_id": msg.ID,
+	}
+	body := chatPushBody(msg)
+	for _, token := range tokens {
+		if strings.TrimSpace(token.Token) == "" {
+			continue
+		}
+		_ = s.pushSender.Send(ctx, push.Message{
+			Token: token.Token,
+			Title: "New message",
+			Body:  body,
+			Data:  cloneStringMap(data),
+		})
+	}
+}
+
+func chatPushBody(msg domain.ChatMessage) string {
+	const fallback = "You have a new chat message."
+	switch msg.MessageType {
+	case domain.MessageTypeText:
+		preview := strings.Join(strings.Fields(msg.Content), " ")
+		if preview == "" {
+			return fallback
+		}
+		runes := []rune(preview)
+		if len(runes) > 120 {
+			return string(runes[:117]) + "..."
+		}
+		return preview
+	default:
+		return fallback
+	}
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func isValidDevicePlatform(platform domain.DevicePlatform) bool {
+	switch platform {
+	case domain.DevicePlatformIOS, domain.DevicePlatformAndroid:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateMessagePayload(messageType domain.MessageType, content, imageURL string, metadata map[string]any) error {

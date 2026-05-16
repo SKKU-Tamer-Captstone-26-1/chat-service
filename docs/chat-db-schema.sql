@@ -17,7 +17,8 @@ CREATE TYPE "member_status" AS ENUM (
 CREATE TYPE "message_type" AS ENUM (
   'TEXT',
   'SYSTEM',
-  'IMAGE'
+  'IMAGE',
+  'FILE'
 );
 
 CREATE TABLE "chat_rooms" (
@@ -73,7 +74,25 @@ CREATE TABLE "chat_room_events" (
   "created_at" timestamptz NOT NULL DEFAULT (now())
 );
 
+CREATE TABLE "chat_device_tokens" (
+  "user_id" uuid NOT NULL,
+  "device_id" text NOT NULL,
+  "token" text NOT NULL,
+  "platform" varchar(20) NOT NULL CHECK ("platform" IN ('IOS', 'ANDROID')),
+  "is_active" boolean NOT NULL DEFAULT true,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "updated_at" timestamptz NOT NULL DEFAULT (now()),
+  "last_seen_at" timestamptz NOT NULL DEFAULT (now()),
+  "unregistered_at" timestamptz,
+  PRIMARY KEY ("user_id", "device_id")
+);
+
 CREATE INDEX ON "chat_rooms" ("room_type", "linked_board_id");
+
+CREATE UNIQUE INDEX ON "chat_rooms" ("linked_board_id")
+  WHERE "room_type" = 'BOARD_LINKED_GROUP'
+    AND "is_active" = true
+    AND "deleted_at" IS NULL;
 
 CREATE INDEX ON "chat_rooms" ("owner_user_id", "is_active");
 
@@ -98,6 +117,10 @@ CREATE INDEX ON "chat_messages" ("room_id", "is_deleted", "created_at");
 CREATE INDEX ON "chat_room_events" ("room_id", "created_at");
 
 CREATE INDEX ON "chat_room_events" ("event_type", "created_at");
+
+CREATE INDEX ON "chat_device_tokens" ("user_id", "is_active");
+
+CREATE INDEX ON "chat_device_tokens" ("token");
 
 COMMENT ON TABLE "chat_rooms" IS 'linked_board_id must be unique when room_type = BOARD_LINKED_GROUP
 and deleted_at is null. This should be enforced with a partial unique index in PostgreSQL.
@@ -126,6 +149,7 @@ COMMENT ON TABLE "chat_messages" IS 'Soft delete only.
 Keep rows for audit/history.
 sequence_no should be assigned per room.
 IMAGE messages may use image_url plus metadata_json for extensibility.
+FILE messages store file metadata and internal object references in metadata_json.
 ';
 
 COMMENT ON COLUMN "chat_messages"."sender_user_id" IS 'internal user id from auth service';
@@ -136,7 +160,7 @@ COMMENT ON COLUMN "chat_messages"."content" IS 'nullable for image/system cases 
 
 COMMENT ON COLUMN "chat_messages"."image_url" IS 'nullable; initial image support';
 
-COMMENT ON COLUMN "chat_messages"."metadata_json" IS 'optional extra payload for system/image messages';
+COMMENT ON COLUMN "chat_messages"."metadata_json" IS 'optional extra payload for system/image/file messages';
 
 COMMENT ON COLUMN "chat_messages"."deleted_by_user_id" IS 'nullable; usually owner who deleted it';
 
@@ -147,6 +171,19 @@ Can coexist with SYSTEM messages.
 COMMENT ON COLUMN "chat_room_events"."actor_user_id" IS 'nullable for system-generated events';
 
 COMMENT ON COLUMN "chat_room_events"."event_type" IS 'e.g. ROOM_CREATED, MEMBER_JOINED, MEMBER_REMOVED, ROOM_DELETED';
+
+COMMENT ON TABLE "chat_device_tokens" IS 'FCM device tokens for chat-message push only.
+Board/notice/top-bell notification state is outside chat-service.
+Tokens are registered and unregistered for the authenticated user only.
+';
+
+COMMENT ON COLUMN "chat_device_tokens"."user_id" IS 'internal user id from auth service';
+
+COMMENT ON COLUMN "chat_device_tokens"."device_id" IS 'client-provided stable device or installation id scoped to a user';
+
+COMMENT ON COLUMN "chat_device_tokens"."token" IS 'FCM registration token; do not log this value';
+
+COMMENT ON COLUMN "chat_device_tokens"."platform" IS 'IOS or ANDROID';
 
 ALTER TABLE "chat_room_members" ADD FOREIGN KEY ("room_id") REFERENCES "chat_rooms" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 

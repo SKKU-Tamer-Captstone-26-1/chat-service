@@ -115,6 +115,7 @@ func TestListRoomsByUserReturnsUnreadCountsAndPagination(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	userID := id.New()
+	otherUserID := id.New()
 
 	room1 := domain.ChatRoom{
 		ID:          id.New(),
@@ -169,10 +170,14 @@ func TestListRoomsByUserReturnsUnreadCountsAndPagination(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
+		senderUserID := userID
+		if i == 1 {
+			senderUserID = otherUserID
+		}
 		if _, err := store.CreateMessageWithNextSequence(ctx, domain.ChatMessage{
 			ID:           id.New(),
 			RoomID:       room1.ID,
-			SenderUserID: userID,
+			SenderUserID: senderUserID,
 			MessageType:  domain.MessageTypeText,
 			Content:      "r1",
 			CreatedAt:    now.Add(time.Duration(i) * time.Second),
@@ -185,7 +190,7 @@ func TestListRoomsByUserReturnsUnreadCountsAndPagination(t *testing.T) {
 		if _, err := store.CreateMessageWithNextSequence(ctx, domain.ChatMessage{
 			ID:           id.New(),
 			RoomID:       room2.ID,
-			SenderUserID: userID,
+			SenderUserID: otherUserID,
 			MessageType:  domain.MessageTypeText,
 			Content:      "r2",
 			CreatedAt:    now.Add(time.Duration(i) * time.Second),
@@ -331,5 +336,94 @@ func TestListRoomsByUserHandlesRoomsWithoutLastMessage(t *testing.T) {
 	}
 	if nextToken != "" {
 		t.Fatalf("expected empty next token on last page, got %q", nextToken)
+	}
+}
+
+func TestDeviceTokenLifecycle(t *testing.T) {
+	store, _ := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	userID := id.New()
+
+	token, err := store.UpsertDeviceToken(ctx, domain.DeviceToken{
+		UserID:     userID,
+		DeviceID:   "device-1",
+		Token:      "token-1",
+		Platform:   domain.DevicePlatformIOS,
+		IsActive:   true,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		LastSeenAt: now,
+	})
+	if err != nil {
+		t.Fatalf("upsert device token failed: %v", err)
+	}
+	if token.UserID != userID || token.DeviceID != "device-1" || token.Token != "token-1" || token.Platform != domain.DevicePlatformIOS {
+		t.Fatalf("unexpected token after insert: %+v", token)
+	}
+
+	updatedAt := now.Add(time.Minute)
+	token, err = store.UpsertDeviceToken(ctx, domain.DeviceToken{
+		UserID:     userID,
+		DeviceID:   "device-1",
+		Token:      "token-2",
+		Platform:   domain.DevicePlatformAndroid,
+		IsActive:   true,
+		CreatedAt:  updatedAt,
+		UpdatedAt:  updatedAt,
+		LastSeenAt: updatedAt,
+	})
+	if err != nil {
+		t.Fatalf("upsert existing device token failed: %v", err)
+	}
+	if token.Token != "token-2" || token.Platform != domain.DevicePlatformAndroid {
+		t.Fatalf("expected token update, got %+v", token)
+	}
+
+	active, err := store.ListActiveDeviceTokensByUserIDs(ctx, []string{userID})
+	if err != nil {
+		t.Fatalf("list active tokens failed: %v", err)
+	}
+	if len(active) != 1 || active[0].Token != "token-2" {
+		t.Fatalf("expected one updated active token, got %+v", active)
+	}
+
+	otherUserID := id.New()
+	if _, err := store.UpsertDeviceToken(ctx, domain.DeviceToken{
+		UserID:     otherUserID,
+		DeviceID:   "device-2",
+		Token:      "token-2",
+		Platform:   domain.DevicePlatformAndroid,
+		IsActive:   true,
+		CreatedAt:  updatedAt,
+		UpdatedAt:  updatedAt,
+		LastSeenAt: updatedAt,
+	}); err != nil {
+		t.Fatalf("upsert same token for another user failed: %v", err)
+	}
+	active, err = store.ListActiveDeviceTokensByUserIDs(ctx, []string{userID})
+	if err != nil {
+		t.Fatalf("list original user active tokens failed: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("expected original user token to be deactivated by same-token upsert, got %+v", active)
+	}
+	active, err = store.ListActiveDeviceTokensByUserIDs(ctx, []string{otherUserID})
+	if err != nil {
+		t.Fatalf("list other user active tokens failed: %v", err)
+	}
+	if len(active) != 1 || active[0].Token != "token-2" {
+		t.Fatalf("expected other user token to stay active, got %+v", active)
+	}
+
+	if err := store.DeactivateDeviceToken(ctx, otherUserID, "device-2", now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("deactivate device token failed: %v", err)
+	}
+	active, err = store.ListActiveDeviceTokensByUserIDs(ctx, []string{otherUserID})
+	if err != nil {
+		t.Fatalf("list active tokens after deactivate failed: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("expected no active tokens after deactivate, got %+v", active)
 	}
 }

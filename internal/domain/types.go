@@ -33,6 +33,13 @@ const (
 	MessageTypeFile   MessageType = "FILE"
 )
 
+type DevicePlatform string
+
+const (
+	DevicePlatformIOS     DevicePlatform = "IOS"
+	DevicePlatformAndroid DevicePlatform = "ANDROID"
+)
+
 type ChatRoom struct {
 	ID            string
 	RoomType      RoomType
@@ -82,4 +89,16 @@ type ChatRoomSummary struct {
 	Room        ChatRoom
 	LastMessage *ChatMessage
 	UnreadCnt   int64
+}
+
+type DeviceToken struct {
+	UserID         string
+	DeviceID       string
+	Token          string
+	Platform       DevicePlatform
+	IsActive       bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	LastSeenAt     time.Time
+	UnregisteredAt *time.Time
 }

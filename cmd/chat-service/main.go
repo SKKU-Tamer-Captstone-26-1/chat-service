@@ -17,6 +17,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/ontheblock/chat-service/internal/auth"
 	"github.com/ontheblock/chat-service/internal/pubsub"
+	fcmpush "github.com/ontheblock/chat-service/internal/push/fcm"
 	"github.com/ontheblock/chat-service/internal/repository"
 	"github.com/ontheblock/chat-service/internal/repository/memory"
 	postgresrepo "github.com/ontheblock/chat-service/internal/repository/postgres"
@@ -60,6 +61,13 @@ func main() {
 		opts = append(opts, service.WithTrustedAttachmentBucket(strings.TrimSpace(os.Getenv("GCP_STORAGE_BUCKET"))))
 		log.Printf("attachment upload signer enabled for bucket %s", os.Getenv("GCP_STORAGE_BUCKET"))
 	}
+	pushLabel := "push disabled"
+	if pushOpt, label, err := initPushSender(ctx); err != nil {
+		log.Fatalf("push sender init failed: %v", err)
+	} else if pushOpt != nil {
+		opts = append(opts, pushOpt)
+		pushLabel = label
+	}
 	svc := service.New(store, store, ps, opts...)
 	handler := transportgrpc.NewServer(svc)
 
@@ -72,7 +80,7 @@ func main() {
 	chatv1.RegisterChatServiceServer(grpcServer, handler)
 
 	go func() {
-		log.Printf("chat-service listening on %s (%s repository, %s auth)", addr, storeLabel, authLabel)
+		log.Printf("chat-service listening on %s (%s repository, %s auth, %s)", addr, storeLabel, authLabel, pushLabel)
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Printf("grpc serve stopped: %v", err)
 		}
@@ -160,6 +168,33 @@ func readURLExpiry() time.Duration {
 		return defaultMinutes * time.Minute
 	}
 	return minutes
+}
+
+func initPushSender(ctx context.Context) (service.Option, string, error) {
+	if !envBool("CHAT_PUSH_FCM_ENABLED") {
+		return nil, "push disabled", nil
+	}
+	projectID := strings.TrimSpace(os.Getenv("CHAT_FCM_PROJECT_ID"))
+	if projectID == "" {
+		projectID = strings.TrimSpace(os.Getenv("GCP_PROJECT_ID"))
+	}
+	if projectID == "" {
+		return nil, "", errors.New("CHAT_FCM_PROJECT_ID or GCP_PROJECT_ID is required when CHAT_PUSH_FCM_ENABLED=true")
+	}
+	sender, err := fcmpush.NewSender(ctx, projectID)
+	if err != nil {
+		return nil, "", err
+	}
+	return service.WithPushSender(sender), "fcm push enabled", nil
+}
+
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func initAuth() ([]grpc.ServerOption, string, func(), error) {

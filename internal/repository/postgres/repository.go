@@ -106,6 +106,18 @@ func (s *Store) ListMessagesAfter(ctx context.Context, roomID string, afterSeque
 	return s.asRepo().ListMessagesAfter(ctx, roomID, afterSequence, limit)
 }
 
+func (s *Store) UpsertDeviceToken(ctx context.Context, token domain.DeviceToken) (domain.DeviceToken, error) {
+	return s.asRepo().UpsertDeviceToken(ctx, token)
+}
+
+func (s *Store) DeactivateDeviceToken(ctx context.Context, userID, deviceID string, now time.Time) error {
+	return s.asRepo().DeactivateDeviceToken(ctx, userID, deviceID, now)
+}
+
+func (s *Store) ListActiveDeviceTokensByUserIDs(ctx context.Context, userIDs []string) ([]domain.DeviceToken, error) {
+	return s.asRepo().ListActiveDeviceTokensByUserIDs(ctx, userIDs)
+}
+
 type txStore struct {
 	q Runner
 }
@@ -188,7 +200,7 @@ func (t *txStore) ListRoomsByUser(ctx context.Context, userID string, limit int,
 	args := []any{userID, limit + 1}
 	q := `
 SELECT r.id, r.room_type, r.title, COALESCE(r.linked_board_id::text,''), r.owner_user_id, r.is_active, r.created_at, r.updated_at, r.deleted_at,
-       COALESCE((SELECT COUNT(1) FROM chat_messages m WHERE m.room_id = r.id AND m.sequence_no > COALESCE(mem.last_read_sequence_no,0)), 0),
+       COALESCE((SELECT COUNT(1) FROM chat_messages m WHERE m.room_id = r.id AND m.sequence_no > COALESCE(mem.last_read_sequence_no,0) AND m.sender_user_id <> mem.user_id), 0),
        lm.id, lm.room_id, lm.sender_user_id, lm.message_type, lm.sequence_no, COALESCE(lm.content,''), COALESCE(lm.image_url,''), lm.metadata_json,
        lm.is_deleted, lm.deleted_at, lm.deleted_by_user_id::text, lm.created_at, lm.updated_at
 FROM chat_room_members mem
@@ -567,6 +579,116 @@ LIMIT $3
 			m.DeletedByUserID = deletedBy.String
 		}
 		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (t *txStore) UpsertDeviceToken(ctx context.Context, token domain.DeviceToken) (domain.DeviceToken, error) {
+	if _, err := t.q.ExecContext(ctx, `
+UPDATE chat_device_tokens
+SET is_active = false,
+    updated_at = $3,
+    unregistered_at = $3
+WHERE token = $1
+  AND (user_id <> $2::uuid OR device_id <> $4)
+`, token.Token, token.UserID, token.UpdatedAt, token.DeviceID); err != nil {
+		return domain.DeviceToken{}, err
+	}
+
+	var out domain.DeviceToken
+	var unregisteredAt sql.NullTime
+	err := t.q.QueryRowContext(ctx, `
+INSERT INTO chat_device_tokens
+  (user_id, device_id, token, platform, is_active, created_at, updated_at, last_seen_at, unregistered_at)
+VALUES ($1::uuid, $2, $3, $4, true, $5, $6, $7, NULL)
+ON CONFLICT (user_id, device_id) DO UPDATE
+SET token = EXCLUDED.token,
+    platform = EXCLUDED.platform,
+    is_active = true,
+    updated_at = EXCLUDED.updated_at,
+    last_seen_at = EXCLUDED.last_seen_at,
+    unregistered_at = NULL
+RETURNING user_id::text, device_id, token, platform, is_active, created_at, updated_at, last_seen_at, unregistered_at
+`, token.UserID, token.DeviceID, token.Token, token.Platform, token.CreatedAt, token.UpdatedAt, token.LastSeenAt).Scan(
+		&out.UserID,
+		&out.DeviceID,
+		&out.Token,
+		&out.Platform,
+		&out.IsActive,
+		&out.CreatedAt,
+		&out.UpdatedAt,
+		&out.LastSeenAt,
+		&unregisteredAt,
+	)
+	if err != nil {
+		return domain.DeviceToken{}, err
+	}
+	if unregisteredAt.Valid {
+		t := unregisteredAt.Time
+		out.UnregisteredAt = &t
+	}
+	return out, nil
+}
+
+func (t *txStore) DeactivateDeviceToken(ctx context.Context, userID, deviceID string, now time.Time) error {
+	_, err := t.q.ExecContext(ctx, `
+UPDATE chat_device_tokens
+SET is_active = false,
+    updated_at = $3,
+    unregistered_at = $3
+WHERE user_id = $1::uuid AND device_id = $2
+`, userID, deviceID, now)
+	return err
+}
+
+func (t *txStore) ListActiveDeviceTokensByUserIDs(ctx context.Context, userIDs []string) ([]domain.DeviceToken, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(userIDs))
+	placeholders := make([]string, 0, len(userIDs))
+	for _, userID := range userIDs {
+		args = append(args, userID)
+		placeholders = append(placeholders, fmt.Sprintf("$%d::uuid", len(args)))
+	}
+	rows, err := t.q.QueryContext(ctx, `
+SELECT user_id::text, device_id, token, platform, is_active, created_at, updated_at, last_seen_at, unregistered_at
+FROM chat_device_tokens
+WHERE is_active = true
+  AND token <> ''
+  AND user_id IN (`+strings.Join(placeholders, ",")+`)
+ORDER BY user_id ASC, device_id ASC
+`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []domain.DeviceToken{}
+	for rows.Next() {
+		var token domain.DeviceToken
+		var unregisteredAt sql.NullTime
+		if err := rows.Scan(
+			&token.UserID,
+			&token.DeviceID,
+			&token.Token,
+			&token.Platform,
+			&token.IsActive,
+			&token.CreatedAt,
+			&token.UpdatedAt,
+			&token.LastSeenAt,
+			&unregisteredAt,
+		); err != nil {
+			return nil, err
+		}
+		if unregisteredAt.Valid {
+			t := unregisteredAt.Time
+			token.UnregisteredAt = &t
+		}
+		out = append(out, token)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

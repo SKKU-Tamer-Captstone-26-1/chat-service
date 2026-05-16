@@ -74,6 +74,19 @@ CREATE TABLE chat_room_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE chat_device_tokens (
+  user_id uuid NOT NULL,
+  device_id text NOT NULL,
+  token text NOT NULL,
+  platform varchar(20) NOT NULL CHECK (platform IN ('IOS', 'ANDROID')),
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  unregistered_at timestamptz,
+  PRIMARY KEY (user_id, device_id)
+);
+
 CREATE INDEX chat_rooms_room_type_linked_board_id_idx
   ON chat_rooms (room_type, linked_board_id);
 
@@ -118,6 +131,12 @@ CREATE INDEX chat_room_events_room_created_at_idx
 
 CREATE INDEX chat_room_events_event_type_created_at_idx
   ON chat_room_events (event_type, created_at);
+
+CREATE INDEX chat_device_tokens_user_active_idx
+  ON chat_device_tokens (user_id, is_active);
+
+CREATE INDEX chat_device_tokens_token_idx
+  ON chat_device_tokens (token);
 
 ALTER TABLE chat_room_members
   ADD CONSTRAINT chat_room_members_room_fk
