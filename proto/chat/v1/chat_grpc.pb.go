@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	ChatService_CreateRoom_FullMethodName                = "/ontheblock.chat.v1.ChatService/CreateRoom"
 	ChatService_CreateBoardLinkedRoom_FullMethodName     = "/ontheblock.chat.v1.ChatService/CreateBoardLinkedRoom"
+	ChatService_GetOrCreateBoardChatRoom_FullMethodName  = "/ontheblock.chat.v1.ChatService/GetOrCreateBoardChatRoom"
 	ChatService_JoinRoom_FullMethodName                  = "/ontheblock.chat.v1.ChatService/JoinRoom"
 	ChatService_LeaveRoom_FullMethodName                 = "/ontheblock.chat.v1.ChatService/LeaveRoom"
 	ChatService_ListMyRooms_FullMethodName               = "/ontheblock.chat.v1.ChatService/ListMyRooms"
@@ -29,6 +30,9 @@ const (
 	ChatService_CreateAttachmentUploadURL_FullMethodName = "/ontheblock.chat.v1.ChatService/CreateAttachmentUploadURL"
 	ChatService_CreateImageUploadURL_FullMethodName      = "/ontheblock.chat.v1.ChatService/CreateImageUploadURL"
 	ChatService_MarkAsRead_FullMethodName                = "/ontheblock.chat.v1.ChatService/MarkAsRead"
+	ChatService_MarkChatRoomRead_FullMethodName          = "/ontheblock.chat.v1.ChatService/MarkChatRoomRead"
+	ChatService_RegisterDeviceToken_FullMethodName       = "/ontheblock.chat.v1.ChatService/RegisterDeviceToken"
+	ChatService_UnregisterDeviceToken_FullMethodName     = "/ontheblock.chat.v1.ChatService/UnregisterDeviceToken"
 	ChatService_RemoveMember_FullMethodName              = "/ontheblock.chat.v1.ChatService/RemoveMember"
 	ChatService_DeleteMessage_FullMethodName             = "/ontheblock.chat.v1.ChatService/DeleteMessage"
 	ChatService_DeactivateRoom_FullMethodName            = "/ontheblock.chat.v1.ChatService/DeactivateRoom"
@@ -59,6 +63,9 @@ type ChatServiceClient interface {
 	// Creates a board-linked group chat room.
 	// Each board may have at most one active linked chat room.
 	CreateBoardLinkedRoom(ctx context.Context, in *CreateBoardLinkedRoomRequest, opts ...grpc.CallOption) (*CreateBoardLinkedRoomResponse, error)
+	// Opens the chat room for a Board context, creating it if needed.
+	// Chat-service does not fetch Board posts; callers provide only the Board context.
+	GetOrCreateBoardChatRoom(ctx context.Context, in *GetOrCreateBoardChatRoomRequest, opts ...grpc.CallOption) (*GetOrCreateBoardChatRoomResponse, error)
 	// Joins an existing room.
 	// Users removed from a room cannot rejoin.
 	JoinRoom(ctx context.Context, in *JoinRoomRequest, opts ...grpc.CallOption) (*JoinRoomResponse, error)
@@ -79,6 +86,12 @@ type ChatServiceClient interface {
 	CreateImageUploadURL(ctx context.Context, in *CreateImageUploadURLRequest, opts ...grpc.CallOption) (*CreateImageUploadURLResponse, error)
 	// Marks a room as read up to a specific sequence number.
 	MarkAsRead(ctx context.Context, in *MarkAsReadRequest, opts ...grpc.CallOption) (*MarkAsReadResponse, error)
+	// Marks a chat room read for the authenticated user.
+	MarkChatRoomRead(ctx context.Context, in *MarkChatRoomReadRequest, opts ...grpc.CallOption) (*MarkChatRoomReadResponse, error)
+	// Registers the authenticated user's device token for chat push notifications.
+	RegisterDeviceToken(ctx context.Context, in *RegisterDeviceTokenRequest, opts ...grpc.CallOption) (*RegisterDeviceTokenResponse, error)
+	// Unregisters the authenticated user's device token for chat push notifications.
+	UnregisterDeviceToken(ctx context.Context, in *UnregisterDeviceTokenRequest, opts ...grpc.CallOption) (*UnregisterDeviceTokenResponse, error)
 	// Removes a member from a room.
 	// Only the room owner may remove members.
 	RemoveMember(ctx context.Context, in *RemoveMemberRequest, opts ...grpc.CallOption) (*RemoveMemberResponse, error)
@@ -114,6 +127,16 @@ func (c *chatServiceClient) CreateBoardLinkedRoom(ctx context.Context, in *Creat
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateBoardLinkedRoomResponse)
 	err := c.cc.Invoke(ctx, ChatService_CreateBoardLinkedRoom_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *chatServiceClient) GetOrCreateBoardChatRoom(ctx context.Context, in *GetOrCreateBoardChatRoomRequest, opts ...grpc.CallOption) (*GetOrCreateBoardChatRoomResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetOrCreateBoardChatRoomResponse)
+	err := c.cc.Invoke(ctx, ChatService_GetOrCreateBoardChatRoom_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +223,36 @@ func (c *chatServiceClient) MarkAsRead(ctx context.Context, in *MarkAsReadReques
 	return out, nil
 }
 
+func (c *chatServiceClient) MarkChatRoomRead(ctx context.Context, in *MarkChatRoomReadRequest, opts ...grpc.CallOption) (*MarkChatRoomReadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MarkChatRoomReadResponse)
+	err := c.cc.Invoke(ctx, ChatService_MarkChatRoomRead_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *chatServiceClient) RegisterDeviceToken(ctx context.Context, in *RegisterDeviceTokenRequest, opts ...grpc.CallOption) (*RegisterDeviceTokenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegisterDeviceTokenResponse)
+	err := c.cc.Invoke(ctx, ChatService_RegisterDeviceToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *chatServiceClient) UnregisterDeviceToken(ctx context.Context, in *UnregisterDeviceTokenRequest, opts ...grpc.CallOption) (*UnregisterDeviceTokenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnregisterDeviceTokenResponse)
+	err := c.cc.Invoke(ctx, ChatService_UnregisterDeviceToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *chatServiceClient) RemoveMember(ctx context.Context, in *RemoveMemberRequest, opts ...grpc.CallOption) (*RemoveMemberResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RemoveMemberResponse)
@@ -273,6 +326,9 @@ type ChatServiceServer interface {
 	// Creates a board-linked group chat room.
 	// Each board may have at most one active linked chat room.
 	CreateBoardLinkedRoom(context.Context, *CreateBoardLinkedRoomRequest) (*CreateBoardLinkedRoomResponse, error)
+	// Opens the chat room for a Board context, creating it if needed.
+	// Chat-service does not fetch Board posts; callers provide only the Board context.
+	GetOrCreateBoardChatRoom(context.Context, *GetOrCreateBoardChatRoomRequest) (*GetOrCreateBoardChatRoomResponse, error)
 	// Joins an existing room.
 	// Users removed from a room cannot rejoin.
 	JoinRoom(context.Context, *JoinRoomRequest) (*JoinRoomResponse, error)
@@ -293,6 +349,12 @@ type ChatServiceServer interface {
 	CreateImageUploadURL(context.Context, *CreateImageUploadURLRequest) (*CreateImageUploadURLResponse, error)
 	// Marks a room as read up to a specific sequence number.
 	MarkAsRead(context.Context, *MarkAsReadRequest) (*MarkAsReadResponse, error)
+	// Marks a chat room read for the authenticated user.
+	MarkChatRoomRead(context.Context, *MarkChatRoomReadRequest) (*MarkChatRoomReadResponse, error)
+	// Registers the authenticated user's device token for chat push notifications.
+	RegisterDeviceToken(context.Context, *RegisterDeviceTokenRequest) (*RegisterDeviceTokenResponse, error)
+	// Unregisters the authenticated user's device token for chat push notifications.
+	UnregisterDeviceToken(context.Context, *UnregisterDeviceTokenRequest) (*UnregisterDeviceTokenResponse, error)
 	// Removes a member from a room.
 	// Only the room owner may remove members.
 	RemoveMember(context.Context, *RemoveMemberRequest) (*RemoveMemberResponse, error)
@@ -320,6 +382,9 @@ func (UnimplementedChatServiceServer) CreateRoom(context.Context, *CreateRoomReq
 func (UnimplementedChatServiceServer) CreateBoardLinkedRoom(context.Context, *CreateBoardLinkedRoomRequest) (*CreateBoardLinkedRoomResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateBoardLinkedRoom not implemented")
 }
+func (UnimplementedChatServiceServer) GetOrCreateBoardChatRoom(context.Context, *GetOrCreateBoardChatRoomRequest) (*GetOrCreateBoardChatRoomResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOrCreateBoardChatRoom not implemented")
+}
 func (UnimplementedChatServiceServer) JoinRoom(context.Context, *JoinRoomRequest) (*JoinRoomResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method JoinRoom not implemented")
 }
@@ -343,6 +408,15 @@ func (UnimplementedChatServiceServer) CreateImageUploadURL(context.Context, *Cre
 }
 func (UnimplementedChatServiceServer) MarkAsRead(context.Context, *MarkAsReadRequest) (*MarkAsReadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MarkAsRead not implemented")
+}
+func (UnimplementedChatServiceServer) MarkChatRoomRead(context.Context, *MarkChatRoomReadRequest) (*MarkChatRoomReadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MarkChatRoomRead not implemented")
+}
+func (UnimplementedChatServiceServer) RegisterDeviceToken(context.Context, *RegisterDeviceTokenRequest) (*RegisterDeviceTokenResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterDeviceToken not implemented")
+}
+func (UnimplementedChatServiceServer) UnregisterDeviceToken(context.Context, *UnregisterDeviceTokenRequest) (*UnregisterDeviceTokenResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnregisterDeviceToken not implemented")
 }
 func (UnimplementedChatServiceServer) RemoveMember(context.Context, *RemoveMemberRequest) (*RemoveMemberResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveMember not implemented")
@@ -409,6 +483,24 @@ func _ChatService_CreateBoardLinkedRoom_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ChatServiceServer).CreateBoardLinkedRoom(ctx, req.(*CreateBoardLinkedRoomRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ChatService_GetOrCreateBoardChatRoom_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOrCreateBoardChatRoomRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChatServiceServer).GetOrCreateBoardChatRoom(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChatService_GetOrCreateBoardChatRoom_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChatServiceServer).GetOrCreateBoardChatRoom(ctx, req.(*GetOrCreateBoardChatRoomRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -557,6 +649,60 @@ func _ChatService_MarkAsRead_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ChatService_MarkChatRoomRead_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MarkChatRoomReadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChatServiceServer).MarkChatRoomRead(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChatService_MarkChatRoomRead_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChatServiceServer).MarkChatRoomRead(ctx, req.(*MarkChatRoomReadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ChatService_RegisterDeviceToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterDeviceTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChatServiceServer).RegisterDeviceToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChatService_RegisterDeviceToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChatServiceServer).RegisterDeviceToken(ctx, req.(*RegisterDeviceTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ChatService_UnregisterDeviceToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnregisterDeviceTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChatServiceServer).UnregisterDeviceToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChatService_UnregisterDeviceToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChatServiceServer).UnregisterDeviceToken(ctx, req.(*UnregisterDeviceTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ChatService_RemoveMember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RemoveMemberRequest)
 	if err := dec(in); err != nil {
@@ -638,6 +784,10 @@ var ChatService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ChatService_CreateBoardLinkedRoom_Handler,
 		},
 		{
+			MethodName: "GetOrCreateBoardChatRoom",
+			Handler:    _ChatService_GetOrCreateBoardChatRoom_Handler,
+		},
+		{
 			MethodName: "JoinRoom",
 			Handler:    _ChatService_JoinRoom_Handler,
 		},
@@ -668,6 +818,18 @@ var ChatService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MarkAsRead",
 			Handler:    _ChatService_MarkAsRead_Handler,
+		},
+		{
+			MethodName: "MarkChatRoomRead",
+			Handler:    _ChatService_MarkChatRoomRead_Handler,
+		},
+		{
+			MethodName: "RegisterDeviceToken",
+			Handler:    _ChatService_RegisterDeviceToken_Handler,
+		},
+		{
+			MethodName: "UnregisterDeviceToken",
+			Handler:    _ChatService_UnregisterDeviceToken_Handler,
 		},
 		{
 			MethodName: "RemoveMember",
