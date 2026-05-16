@@ -25,11 +25,19 @@ The service supports two room types:
 - `GENERAL_GROUP`
 - `BOARD_LINKED_GROUP`
 
-A general group room is created directly from the chat page.
+A general group room is supported by the service contract.
+Current client product flow should not expose arbitrary Chat List room creation unless product policy changes.
 
 A board-linked group room is created from a board post.
 
 Each board post may have at most one linked chat room.
+
+Current product flow for board-linked rooms:
+
+- nearby Board preview belongs to Board/client side
+- chat-service does not load nearby Board posts
+- Board -> Chat entry calls a board-context chat API
+- Chat List must not create arbitrary random chat rooms as a workaround
 
 ## 3. Room Creation
 
@@ -38,6 +46,12 @@ Any authenticated user may create a general group chat room.
 Any authenticated user may create a board-linked group chat room from a board post.
 
 The creator of the room becomes the room owner.
+
+For Board -> Chat entry, the production API is `GetOrCreateBoardChatRoom`.
+
+It uses authenticated user metadata, receives `board_id`, and returns the existing active linked room or creates one if none exists.
+
+If `board_owner_user_id` is supplied by the client, chat-service may add that user as a member, but this value must be validated through Board-service before it is used for ownership or stronger authorization decisions.
 
 ## 4. Room Entry
 
@@ -77,10 +91,13 @@ The initial service supports the following message types:
 TEXT
 SYSTEM
 IMAGE
+FILE
 
 Text messages must be stored as message content.
 
 Image messages may use a primary image URL and additional metadata.
+
+File messages use attachment metadata such as file name, content type, and internal object reference.
 
 System messages are used for service-generated chat events such as room creation, member join, member removal, or room deactivation.
 
@@ -121,8 +138,15 @@ last_read_sequence_no
 Unread messages can be calculated as messages with:
 
 message.sequence_no > member.last_read_sequence_no
+AND message.sender_user_id != member.user_id
 
 Detailed per-message read receipts are not required in the initial version.
+
+The client-facing read API is `MarkChatRoomRead(room_id)`.
+
+The server derives the user from auth metadata and advances that member's read cursor to the latest message sequence in the room.
+
+The top bell notification is separate from chat unread state.
 
 ## 11. Message Ordering
 
@@ -134,11 +158,27 @@ The combination of room_id and sequence_no must be unique.
 
 ## 12. Notification Boundary
 
-Notification delivery is out of scope for the chat service.
+Board, notice, and top-bell notification delivery remain out of scope for the chat service.
 
-The chat service may create events that can later be consumed by a separate notification service.
+The chat service now supports chat-message push notifications only.
+This is limited to notifying active room members when a new chat message is sent.
 
-The notification service must remain separate from chat-service.
+Chat push must remain separate from:
+
+- Board notifications
+- notice notifications
+- top-bell notification state
+
+The chat service may still create events that can later be consumed by a separate notification service.
+Any broader notification service must remain separate from chat-service.
+
+Chat device-token RPCs must derive `user_id` from auth metadata:
+
+- `RegisterDeviceToken(device_id, token, platform)`
+- `UnregisterDeviceToken(device_id)`
+
+`SendMessage` may dispatch an FCM push to active room members except the sender.
+Push delivery failure must not fail message persistence.
 
 ## 13. Redis Policy
 
@@ -167,6 +207,7 @@ rooms
 room members
 messages
 chat room events
+chat device tokens
 
 The service must not use cross-service database foreign keys.
 
@@ -180,7 +221,15 @@ The service uses internal user IDs supplied by the authentication system.
 
 During early development, dev/test user IDs may be used.
 
-Production identity will be provided through the authentication/JWT layer later.
+Production identity is provided through the authentication layer in `CHAT_AUTH_MODE=validate_token`.
+
+Current production mode supports auth metadata through auth-service token validation.
+
+When auth metadata is present:
+
+- request-body user IDs may be omitted
+- if provided, request-body user IDs must match the authenticated principal
+- new production-oriented RPCs should avoid request-body `user_id`
 
 ## 16. Board Relationship Policy
 
@@ -191,6 +240,8 @@ The board service remains the source of truth for board post data.
 The chat service does not own board content.
 
 The database should enforce that each board post has at most one active linked chat room.
+
+Chat-service stores only a logical board reference, currently `linked_board_id`, and an optional lightweight room title snapshot.
 
 ## 17. Development Policy
 

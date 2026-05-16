@@ -81,6 +81,59 @@ CHAT_AUTH_INSECURE=true
 
 If the Cloud Run auth service is private, the chat-service runtime identity must be allowed to invoke it.
 
+## Board-context Chat Entry
+
+Use `GetOrCreateBoardChatRoom` when the client enters chat from a Board post.
+Chat-service does not load nearby Board posts or store Board content. It only receives
+`board_id`, opens the active linked room, or creates one if none exists.
+
+The authenticated user comes from auth metadata, not a request-body `user_id`.
+`board_owner_user_id` is optional and is added as a room member when provided, but it
+must be validated against Board-service before it is used for ownership or stronger
+authorization decisions.
+
+## Chat Read State
+
+Room-member read state uses `last_read_sequence_no`.
+`ListMyRooms` returns `unread_count` per room, excluding messages sent by the same user.
+Clients can sum room `unread_count` values for the Chat tab badge.
+Use `MarkChatRoomRead` when the authenticated user opens a room; the server marks that
+member read through the latest message sequence.
+The older `MarkAsRead` RPC remains available for sequence-specific compatibility.
+
+## Chat Push Notifications
+
+Chat push is chat-message-only. It is separate from Board/notice notifications and the top bell notification.
+
+Device tokens are owned by the authenticated user:
+
+- `RegisterDeviceToken(device_id, token, platform)`
+- `UnregisterDeviceToken(device_id)`
+
+When `SendMessage` creates a new message, chat-service looks up active room members except the sender, finds their active FCM tokens, and sends a push payload:
+
+- `type=chat_message`
+- `room_id=<room_id>`
+- `message_id=<message_id>`
+
+FCM dispatch is disabled unless configured:
+
+```bash
+CHAT_PUSH_FCM_ENABLED=true
+CHAT_FCM_PROJECT_ID=your-firebase-project-id
+```
+
+The runtime needs ADC or service-account credentials with Firebase Messaging permission. Message persistence and unread counts remain the source of truth; push delivery failure does not fail `SendMessage`.
+
+Flutter/client integration checklist:
+
+1. Request notification permission after login.
+2. Get the FCM registration token and a stable device/install ID.
+3. Call `RegisterDeviceToken` with `platform=IOS` or `ANDROID`.
+4. On logout or token rotation, call `UnregisterDeviceToken` or re-register the new token.
+5. For foreground chat pushes, refresh room unread counts or apply the streamed message state.
+6. For opened/background pushes, read `room_id` from the data payload and navigate to that chat room.
+
 ## Useful Commands
 
 ```bash

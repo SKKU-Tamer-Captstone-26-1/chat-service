@@ -1,7 +1,10 @@
 1. For v1, keep `user_id` fields in request bodies.
-Auth/JWT metadata integration will come later.
-Do not remove body user_id fields yet.
+Do not remove body user_id fields yet because local/dev clients and older RPCs still use them.
 Document that request-body user_id is temporary and must not be treated as production-authoritative.
+
+Production mode now supports auth metadata through `CHAT_AUTH_MODE=validate_token`.
+In that mode, handlers derive the authenticated user from `Authorization: Bearer <access_token>`.
+If a request still includes a body user ID, it must match the authenticated user.
 
 2. LeaveRoom behavior for v1
 - Users can voluntarily leave a room.
@@ -28,6 +31,21 @@ Use the active-room condition:
 This means a board can have at most one active linked chat room.
 
 If a linked room is later deactivated, it remains in the database, and a new active room may be created for the same board if needed.
+
+3a. Board-context entry API
+
+Use `GetOrCreateBoardChatRoom` for Board -> Chat entry.
+
+This RPC:
+- requires `board_id`
+- derives the entering user from auth metadata
+- returns the existing active board-linked room when one exists
+- creates a new active board-linked room only when none exists
+- adds the authenticated user as an active member
+- optionally adds `board_owner_user_id` as a member when provided
+
+Chat-service does not fetch nearby Board posts and does not store Board content.
+`board_owner_user_id` must be validated through Board-service before it is used for ownership or stronger authorization decisions.
 
 4. Deactivated room policy
 
@@ -115,6 +133,38 @@ Do not use offset pagination for chat history.
 
 Do not force message history into generic page_token pagination.
 
+7a. Read/unread state
+
+Use room-member read progress with `last_read_sequence_no`.
+
+`ListMyRooms` returns `unread_count` per room.
+Unread count must exclude messages sent by the requesting user.
+
+Use `MarkChatRoomRead(room_id)` as the production client path when a user opens a room.
+The server derives the user from auth metadata and advances that member's `last_read_sequence_no` to the latest room message sequence.
+
+The older sequence-specific `MarkAsRead` RPC remains available for compatibility, but clients should prefer `MarkChatRoomRead` when they only need to clear a room after opening it.
+
+7b. Chat push notification state
+
+Chat-service supports chat-message push only.
+Do not mix this with Board notifications, notice notifications, or the top bell notification surface.
+
+Device-token RPCs:
+- `RegisterDeviceToken(device_id, token, platform)`
+- `UnregisterDeviceToken(device_id)`
+
+These RPCs derive `user_id` from auth metadata and do not accept request-body user IDs.
+
+`SendMessage` should:
+1. persist the message and keep unread state server-derived from persisted messages
+2. find active room members except the sender
+3. load active FCM tokens for those users
+4. send a push payload with `type=chat_message`, `room_id`, and `message_id`
+
+Push delivery failure should not fail `SendMessage`.
+FCM dispatch is disabled unless explicitly configured.
+
 8. Implementation priority
 
 Use incremental tests, not tests only at the end.
@@ -132,6 +182,7 @@ Preferred order:
 
 Focus tests especially on:
 - one active board-linked room per board
+- idempotent `GetOrCreateBoardChatRoom`
 - LEFT users can rejoin
 - REMOVED users cannot rejoin
 - owner transfer on LeaveRoom
@@ -139,6 +190,10 @@ Focus tests especially on:
 - inactive rooms block JoinRoom, SendMessage, and GetMessages
 - deleted messages are returned as placeholders from normal GetMessages without exposing original deleted content
 - per-room sequence_no ordering
+- unread count excludes the user's own messages
+- `MarkChatRoomRead` clears room unread state for the authenticated user
+- device-token registration uses the authenticated user
+- chat-message push excludes the sender and includes `room_id` and `message_id`
 
 Additional v1 moderation constraint:
 - RemoveMember must reject attempts to remove the current room owner (owner change is handled by LeaveRoom transfer rules)
